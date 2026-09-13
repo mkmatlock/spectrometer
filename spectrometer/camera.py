@@ -75,6 +75,8 @@ class CameraStream:
         self._camera = None
         self._started = False
         self._logged_frame = False
+        self._frame_duration_us = None
+        self._exposure_us = self.settings.exposure_us
         self._capture_directory = Path.home() if capture_directory is None else Path(capture_directory)
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spectrum-save")
         self._capture_pending = False
@@ -129,6 +131,7 @@ class CameraStream:
             LOGGER.info("Configured raw stream: size=%s format=%s", raw_size, raw_format)
             self._raw_config = dict(raw)
             self._camera.set_controls(controls)
+            self._frame_duration_us = duration
             self._camera.post_callback = self._on_frame
             self._camera.start(show_preview=False)
             self._started = True
@@ -151,13 +154,15 @@ class CameraStream:
         try:
             with MappedArray(request, "main", write=False) as mapped:
                 frame = process_frame(mapped.array)
+            metadata = request.get_metadata()
             if not self._logged_frame:
-                metadata = request.get_metadata()
                 LOGGER.info("Camera first frame: duration=%s us, exposure=%s us",
                             metadata.get("FrameDuration"), metadata.get("ExposureTime"))
                 self._logged_frame = True
             with self._lock:
                 self._latest = frame
+                self._frame_duration_us = metadata.get("FrameDuration", self._frame_duration_us)
+                self._exposure_us = metadata.get("ExposureTime", self._exposure_us)
             if capture:
                 self._queue_capture(request, frame, timestamp)
             LOGGER.debug("Camera ROI processing %.1f ms", (time.monotonic() - started) * 1000)
@@ -178,6 +183,15 @@ class CameraStream:
             self._capture_pending = self._capture_busy = True
         LOGGER.info("Capture requested")
         return True
+
+    def settings_snapshot(self):
+        with self._lock:
+            return {
+                "frame_rate": (1_000_000 / self._frame_duration_us
+                               if self._frame_duration_us else self.settings.frame_rate),
+                "resolution": SENSOR_SIZE,
+                "exposure_us": self._exposure_us,
+            }
 
     def _queue_capture(self, request, frame, timestamp):
         try:

@@ -34,6 +34,9 @@ class SpectrometerUI:
         from .review import ReviewList
 
         self.review = ReviewList(review_directory)
+        from .settings import SettingsView
+
+        self.settings_view = SettingsView()
         self.mode = "live"
         self._redraw = False
         self._list_start = None
@@ -44,11 +47,36 @@ class SpectrometerUI:
         self.buttons = [
             ("Capture", pygame.Rect(8, 264, 149, 48), on_capture),
             ("Review", pygame.Rect(165, 264, 150, 48), on_review or self._open_review),
-            ("Settings", pygame.Rect(323, 264, 149, 48), on_settings),
+            ("Settings", pygame.Rect(323, 264, 149, 48), on_settings or self._open_settings),
         ]
         self._pressed = None
         self._pointer = None
         self._live_buttons = self.buttons
+
+    def _open_settings(self):
+        if self.camera is not None:
+            self.camera.pause()
+        snapshot = self.camera.settings_snapshot() if self.camera is not None else {}
+        self.settings_view.open(snapshot)
+        self.mode = "settings"
+        self.buttons = [("Calibrate", pygame.Rect(8, 264, 228, 48), self._calibrate),
+                        ("Back", pygame.Rect(244, 264, 228, 48), self._exit_settings)]
+        self._redraw = True
+
+    def _calibrate(self):
+        self.settings_view.message = "Calibration is not implemented yet"
+        self._redraw = True
+
+    def _exit_settings(self):
+        self.mode = "live"
+        self.buttons = self._live_buttons
+        if self.camera is not None:
+            self.camera.resume()
+        self._redraw = True
+
+    def _poll_settings(self):
+        if self.mode == "settings" and self.settings_view.poll():
+            self._redraw = True
 
     def _open_review(self):
         if self.camera is not None:
@@ -60,7 +88,7 @@ class SpectrometerUI:
     def _review_list(self):
         self.mode = "review"
         self.buttons = [("Display", pygame.Rect(8, 264, 228, 48), self.review.display),
-                        ("Exit", pygame.Rect(244, 264, 228, 48), self._exit_review)]
+                        ("Back", pygame.Rect(244, 264, 228, 48), self._exit_review)]
         self._redraw = True
 
     def _exit_review(self):
@@ -162,10 +190,12 @@ class SpectrometerUI:
         surface.fill(BACKGROUND)
         if self.mode == "review":
             self._draw_review(surface, font)
-        if self.mode != "review" and surface.get_clip().colliderect(self.spectrum_rect):
+        if self.mode == "settings":
+            self._draw_settings(surface, font)
+        if self.mode in ("live", "saved") and surface.get_clip().colliderect(self.spectrum_rect):
             self._plot.draw(surface, self.spectrum_rect.topleft)
         for rect, label in ((self.camera_slice_rect, "Raw camera slice — placeholder"),):
-            if self.mode == "review":
+            if self.mode in ("review", "settings"):
                 break
             if not surface.get_clip().colliderect(rect):
                 continue
@@ -173,7 +203,7 @@ class SpectrometerUI:
             pygame.draw.rect(surface, BORDER, rect, width=1, border_radius=4)
             text = font.render(label, True, MUTED)
             surface.blit(text, text.get_rect(center=rect.center))
-        if self.mode != "review" and self._camera_bar is not None:
+        if self.mode in ("live", "saved") and self._camera_bar is not None:
             surface.blit(self._camera_bar, self.camera_slice_rect.move(1, 1))
         for i, (label, rect, _) in enumerate(self.buttons):
             if not surface.get_clip().colliderect(rect):
@@ -197,6 +227,20 @@ class SpectrometerUI:
             y = 34 + (210 - height) * self.review.offset // (len(self.review.entries) - 5)
             pygame.draw.rect(surface, MUTED, (464, y, 6, height))
 
+    def _draw_settings(self, surface, font):
+        small = pygame.font.Font(None, 19)
+        title = self.settings_view.message or "Settings"
+        surface.blit(small.render(title, True, TEXT), (8, 10))
+        for index, (name, value) in enumerate(self.settings_view.rows):
+            rect = pygame.Rect(8, 34 + index * 42, 464, 40)
+            pygame.draw.rect(surface, PANEL, rect)
+            surface.blit(font.render(name, True, MUTED), (16, rect.y + 12))
+            # Fit long SSIDs without allowing values to overlap option names.
+            while small.size(value)[0] > 245 and len(value) > 1:
+                value = value[:-4] + "..." if len(value) > 4 else value[:-1]
+            text = small.render(value, True, TEXT)
+            surface.blit(text, text.get_rect(midright=(464, rect.centery)))
+
     def run(self):
         """Use the directly connected LCD unless a desktop preview is requested."""
         from contextlib import nullcontext
@@ -209,6 +253,7 @@ class SpectrometerUI:
                     self._run_desktop()
         finally:
             self.review.close()
+            self.settings_view.close()
 
     def _poll_camera(self):
         if self.camera is None or self.mode != "live":
@@ -276,6 +321,7 @@ class SpectrometerUI:
                             last_position = None
                         new_frame = self._poll_camera()
                         self._poll_review()
+                        self._poll_settings()
                         if self._redraw:
                             self.draw(surface, font)
                             hardware.present(surface)
@@ -314,7 +360,8 @@ class SpectrometerUI:
             pygame.display.flip()
             while True:
                 # Block while idle instead of continuously repainting the SPI LCD.
-                event = pygame.event.wait(20) if self.camera is not None or self.review.future is not None else pygame.event.wait()
+                event = pygame.event.wait(20) if (self.camera is not None or self.review.future is not None
+                                                or self.settings_view.future is not None) else pygame.event.wait()
                 if event.type == pygame.QUIT or (
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
                 ):
@@ -325,6 +372,7 @@ class SpectrometerUI:
                     self._pointer = self._pressed = None
                 new_frame = self._poll_camera()
                 self._poll_review()
+                self._poll_settings()
                 if self._redraw or new_frame or previous != self._pressed or event.type in (
                     pygame.WINDOWEXPOSED, pygame.WINDOWSHOWN
                 ):

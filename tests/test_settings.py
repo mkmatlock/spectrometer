@@ -34,7 +34,9 @@ class SettingsTests(unittest.TestCase):
             ui._pointer_event('lcd', (40, 50), False)
             self.assertEqual(ui.mode, 'settings')
             ui.buttons[0][2]()
-            self.assertIn('not implemented', ui.settings_view.message)
+            self.assertTrue(ui._calibration_dialog)
+            ui.buttons[1][2]()
+            self.assertEqual(ui.mode, 'settings')
             ui.buttons[1][2]()
             self.assertEqual(ui.mode, 'live')
             camera.pause.assert_called_once_with()
@@ -52,3 +54,31 @@ class SettingsTests(unittest.TestCase):
                              'resolution': (4056, 3040), 'exposure_us': 12345})
         finally:
             camera.close()
+
+    def test_calibration_dialog_selection_and_modal_input(self):
+        ui = SpectrometerUI()
+        try:
+            with patch('spectrometer.settings.network_status', return_value=('Unavailable', 'Unavailable')):
+                ui._open_settings()
+                ui.settings_view.future.result(timeout=5)
+            ui._calibrate()
+            self.assertEqual([b[0] for b in ui.buttons], ['Select', 'Back'])
+            self.assertEqual([r[0] for r in ui._calibration_rows], ['Background', 'Sensor', 'Scale'])
+            ui._select_calibration()
+            self.assertIn('Choose', ui._calibration_message)
+            for index, (name, rect) in enumerate(ui._calibration_rows):
+                ui._pointer_event('lcd', rect.center, True)
+                ui._pointer_event('lcd', rect.center, False)
+                self.assertEqual(ui._calibration_selected, index)
+                ui._select_calibration()
+                self.assertEqual(ui._calibration_message, name + ': not implemented yet')
+            ui._pointer_event('lcd', (350, 300), True)
+            ui._pointer_event('lcd', (350, 300), False)
+            self.assertTrue(ui._calibration_dialog)  # Underlying Settings Back is blocked.
+            ui._back_calibration()
+            self.assertFalse(ui._calibration_dialog)
+            self.assertEqual(ui.mode, 'settings')
+            self.assertEqual([b[0] for b in ui.buttons], ['Calibrate', 'Back'])
+        finally:
+            ui.review.close()
+            ui.settings_view.close()

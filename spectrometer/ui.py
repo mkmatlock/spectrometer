@@ -41,6 +41,11 @@ class SpectrometerUI:
         self._redraw = False
         self._list_start = None
         self._delete_dialog = False
+        self._calibration_dialog = False
+        self._calibration_selected = None
+        self._calibration_pressed = None
+        self._calibration_rows = [(name, pygame.Rect(64, 80 + i * 44, 352, 40))
+                                  for i, name in enumerate(("Background", "Sensor", "Scale"))]
         if on_capture is None and camera is not None:
             on_capture = camera.request_capture
         self.spectrum_rect = pygame.Rect(8, 8, 464, 200)
@@ -65,7 +70,26 @@ class SpectrometerUI:
         self._redraw = True
 
     def _calibrate(self):
-        self.settings_view.message = "Calibration is not implemented yet"
+        self._settings_buttons = self.buttons
+        self._calibration_dialog = True
+        self._calibration_selected = None
+        self._calibration_message = "Calibration mode"
+        self.buttons = [("Select", pygame.Rect(64, 224, 172, 48), self._select_calibration),
+                        ("Back", pygame.Rect(244, 224, 172, 48), self._back_calibration)]
+        self._redraw = True
+
+    def _select_calibration(self):
+        if self._calibration_selected is None:
+            self._calibration_message = "Choose a calibration mode"
+        else:
+            name = self._calibration_rows[self._calibration_selected][0]
+            self._calibration_message = name + ": not implemented yet"
+            LOGGER.info("%s calibration is not implemented yet", name)
+        self._redraw = True
+
+    def _back_calibration(self):
+        self._calibration_dialog = False
+        self.buttons = self._settings_buttons
         self._redraw = True
 
     def _exit_settings(self):
@@ -189,9 +213,19 @@ class SpectrometerUI:
         if down and self._pointer is None:
             self._pointer = pointer
             self._pressed = self._button_at(position)
+            if self._calibration_dialog:
+                self._calibration_pressed = next((i for i, (_, rect) in enumerate(self._calibration_rows)
+                                                 if rect.collidepoint(position)), None)
             if self.mode == "review" and 34 <= position[1] < 244:
                 self._list_start = (position[1], self.review.offset)
         elif not down and self._pointer == pointer:
+            if self._calibration_dialog and self._calibration_pressed is not None:
+                index = self._calibration_pressed
+                if self._calibration_rows[index][1].collidepoint(position):
+                    self._calibration_selected = index
+                    self._calibration_message = "Calibration mode"
+                    self._redraw = True
+                self._calibration_pressed = None
             if self._list_start is not None:
                 if abs(position[1] - self._list_start[0]) < 10 and 34 <= position[1] < 244:
                     index = self.review.offset + int((position[1] - 34) // self.review.ROW_HEIGHT)
@@ -246,6 +280,8 @@ class SpectrometerUI:
             name = self.review.loaded_path.name if self.review.loaded_path else ""
             text = small.render(name, True, MUTED)
             surface.blit(text, text.get_rect(center=(240, 142)))
+        if self._calibration_dialog:
+            self._draw_calibration_dialog(surface, font)
         for i, (label, rect, _) in enumerate(self.buttons):
             if not surface.get_clip().colliderect(rect):
                 continue
@@ -253,6 +289,25 @@ class SpectrometerUI:
             pygame.draw.rect(surface, color, rect, border_radius=6)
             text = font.render(label, True, TEXT)
             surface.blit(text, text.get_rect(center=rect.center))
+
+    def _draw_calibration_dialog(self, surface, font):
+        for label, rect, _ in self._settings_buttons:
+            pygame.draw.rect(surface, BUTTON, rect, border_radius=6)
+            text = font.render(label, True, TEXT)
+            surface.blit(text, text.get_rect(center=rect.center))
+        shade = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 160))
+        surface.blit(shade, (0, 0))
+        pygame.draw.rect(surface, PANEL, (48, 32, 384, 256), border_radius=8)
+        pygame.draw.rect(surface, BORDER, (48, 32, 384, 256), 1, border_radius=8)
+        small = pygame.font.Font(None, 20)
+        text = small.render(self._calibration_message, True, TEXT)
+        surface.blit(text, text.get_rect(center=(240, 56)))
+        for i, (name, rect) in enumerate(self._calibration_rows):
+            pygame.draw.rect(surface, BUTTON if i == self._calibration_selected else BACKGROUND,
+                             rect, border_radius=4)
+            text = font.render(name, True, TEXT)
+            surface.blit(text, text.get_rect(midleft=(rect.left + 12, rect.centery)))
 
     def _draw_review(self, surface, font):
         small = pygame.font.Font(None, 19)

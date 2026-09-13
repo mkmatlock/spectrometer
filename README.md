@@ -72,7 +72,9 @@ Touch and release each button. Logs show raw controller coordinates, mapped UI c
 ## Power button
 
 Connect the momentary switch between GPIO 21 (physical pin 40) and GND. The app
-enables the internal pull-up and debounces the switch. Each press toggles the
-backlight and camera/UI activity; holding it does not repeat. The Pi remains
+enables the internal pull-up and debounces the switch. A short press toggles the
+backlight and camera/UI activity on release. Hold for three seconds to open a
+shutdown confirmation; Yes shuts down the Pi, and No returns to the application.
+Run the updated `setup.sh` once to install the shutdown permission. The Pi remains
 running. Pending captures are cancelled on pause; files already being written
 finish saving. Press again to resume. This applies to the hardware UI.

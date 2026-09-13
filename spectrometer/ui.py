@@ -87,6 +87,37 @@ class SpectrometerUI:
                         ("Back", pygame.Rect(244, 264, 228, 48), self._exit_settings)]
         self._redraw = True
 
+    def _ask_shutdown(self):
+        if self.mode == 'shutdown':
+            return
+        self._shutdown_view = (self.mode, self.buttons)
+        self.mode = 'shutdown'
+        self._shutdown_message = 'Shut down the Raspberry Pi?'
+        self.buttons = [('Yes', pygame.Rect(64, 168, 172, 48), self._confirm_shutdown),
+                        ('No', pygame.Rect(244, 168, 172, 48), self._cancel_shutdown)]
+        if self.camera is not None:
+            self.camera.pause()
+        self._redraw = True
+
+    def _cancel_shutdown(self):
+        self.mode, self.buttons = self._shutdown_view
+        if self.camera is not None and self.mode == 'live':
+            self.camera.resume()
+        self._redraw = True
+
+    def _confirm_shutdown(self):
+        import subprocess
+        try:
+            subprocess.run(['sudo', '-n', '/sbin/shutdown', 'now'], check=True,
+                           capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            LOGGER.exception('Shutdown failed')
+            self._shutdown_message = 'Shutdown failed. Retry or choose No.'
+        else:
+            self._shutdown_message = 'Shutting down...'
+            self.buttons = []
+        self._redraw = True
+
     def _calibrate(self):
         self._settings_buttons = self.buttons
         self._calibration_dialog = True
@@ -448,6 +479,16 @@ class SpectrometerUI:
 
     def _pointer_event(self, pointer, position, down):
         """Shared button handling for desktop events and polled hardware touch."""
+        if self.mode == 'shutdown':
+            if down and self._pointer is None:
+                self._pointer = pointer
+                self._pressed = self._button_at(position)
+            elif not down and self._pointer == pointer:
+                selected = self._pressed
+                self._pointer = self._pressed = None
+                if selected is not None and self._button_at(position) == selected:
+                    self.buttons[selected][2]()
+            return
         if down and self._pointer is None:
             self._pointer = pointer
             self._pressed = self._button_at(position)
@@ -504,6 +545,16 @@ class SpectrometerUI:
     def draw(self, surface, font):
         """Draw cached spectrum axes, trace, camera slice, and touch controls."""
         surface.fill(BACKGROUND)
+        if self.mode == 'shutdown':
+            pygame.draw.rect(surface, PANEL, (48, 88, 384, 144), border_radius=8)
+            pygame.draw.rect(surface, BORDER, (48, 88, 384, 144), 1, border_radius=8)
+            text = font.render(self._shutdown_message, True, TEXT)
+            surface.blit(text, text.get_rect(center=(240, 124)))
+            for i, (label, rect, _) in enumerate(self.buttons):
+                pygame.draw.rect(surface, PRESSED if self._pressed == i else BUTTON, rect, border_radius=6)
+                text = font.render(label, True, TEXT)
+                surface.blit(text, text.get_rect(center=rect.center))
+            return
         if self.mode == "review":
             self._draw_review(surface, font)
         if self.mode == "settings":
@@ -720,14 +771,17 @@ class SpectrometerUI:
                     last_position = None
                     active = True
                     while not stopping.is_set():
-                        if hardware.power_pressed():
-                            active = not active
+                        power = hardware.power_event()
+                        if power in ('short', 'hold') and self.mode != 'shutdown':
+                            active = True if power == 'hold' else not active
                             self._pointer = self._pressed = None
                             self._list_start = None
                             self._peak_touch = None
                             if self._sensor is not None:
                                 self._sensor.start = None
                             last_position = None
+                            if power == 'hold':
+                                self._ask_shutdown()
                             if not active:
                                 hardware.set_screen_active(False)
                                 if self.camera is not None:

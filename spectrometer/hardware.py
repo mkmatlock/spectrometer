@@ -14,6 +14,8 @@ class LCDBackend:
     def __init__(self):
         self._last_touch = None
         self._power_down = False
+        self._power_started = None
+        self._power_held = False
 
     def __enter__(self):
         from .st7796 import st7796
@@ -38,12 +40,22 @@ class LCDBackend:
     def __exit__(self, *exc):
         return self._resources.__exit__(*exc)
 
-    def power_pressed(self):
-        """One toggle per debounced press, even when the switch is held."""
+    def power_event(self):
+        """Short press on release, or one hold event after three seconds."""
         down = self.power_button.is_pressed
-        pressed = down and not self._power_down
+        now = time.monotonic()
+        event = None
+        if down and not self._power_down:
+            self._power_started = now
+            self._power_held = False
+        if self._power_down or down:
+            if not self._power_held and now - self._power_started >= 3:
+                event = 'hold'
+                self._power_held = True
+            elif not down and not self._power_held:
+                event = 'short'
         self._power_down = down
-        return pressed
+        return event
 
     def set_screen_active(self, active):
         self.display.bl_DutyCycle(100 if active else 0)

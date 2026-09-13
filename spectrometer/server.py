@@ -50,13 +50,13 @@ def make_handler(camera):
         timeout = 10
 
         def do_GET(self):
-            if urlsplit(self.path).path not in ("/capture", "/capture.jpg"):
-                self.send_error(404, "Use /capture to capture a JPEG image")
+            if urlsplit(self.path).path not in ("/capture", "/capture.png"):
+                self.send_error(404, "Use /capture to capture a PNG image")
                 return
 
             try:
                 with io.BytesIO() as buffer:
-                    camera.capture_file(buffer, format="jpeg")
+                    camera.capture_file(buffer, format="png")
                     data = buffer.getvalue()
             except Exception:
                 LOGGER.exception("Camera capture failed")
@@ -65,7 +65,7 @@ def make_handler(camera):
 
             try:
                 self.send_response(200)
-                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Type", "image/png")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()

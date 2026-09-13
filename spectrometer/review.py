@@ -63,6 +63,8 @@ class ReviewList:
         self.message = ''
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='spectrum-review')
         self.future = None
+        self.loaded_path = None
+        self._loading_path = None
 
     def refresh(self):
         self.message = ''
@@ -90,7 +92,8 @@ class ReviewList:
             self.message = 'Select a capture first'
             return
         self.message = 'Loading capture...'
-        self.future = self._executor.submit(load_spectrum, self.entries[self.selected])
+        self._loading_path = self.entries[self.selected]
+        self.future = self._executor.submit(load_spectrum, self._loading_path)
 
     def poll(self):
         if self.future is None or not self.future.done():
@@ -98,11 +101,28 @@ class ReviewList:
         future, self.future = self.future, None
         try:
             result = future.result()
+            self.loaded_path = self._loading_path
             self.message = ''
             return result
         except Exception as exc:
             self.message = 'Cannot load: ' + str(exc)
             return None
+
+    def delete_loaded(self):
+        """Delete only the file backing the displayed spectrum, after confirmation."""
+        if self.loaded_path is None:
+            self.message = 'No capture is loaded'
+            return False
+        try:
+            self.loaded_path.unlink()
+        except OSError as exc:
+            self.message = 'Delete failed: ' + str(exc)
+            return False
+        self.loaded_path = None
+        offset = self.offset
+        self.refresh()
+        self.scroll(offset)
+        return True
 
     def close(self):
         self._executor.shutdown(wait=True, cancel_futures=True)

@@ -3,7 +3,7 @@ from pathlib import Path
 import pickle
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pygame
@@ -21,6 +21,61 @@ def record(second=0):
 
 
 class ReviewTests(unittest.TestCase):
+    def test_delete_modal_cancel_confirm_and_exact_loaded_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            older = save_capture(record(0), directory)
+            newest = save_capture(record(1), directory)
+            ui = SpectrometerUI(review_directory=directory)
+            try:
+                ui._open_review()
+                ui.review.selected = 0
+                ui.review.display()
+                ui.review.future.result(timeout=5)
+                ui.review.selected = 1  # Selection changes must not change delete target.
+                ui._poll_review()
+                def tap(position):
+                    ui._pointer_event('lcd', position, True)
+                    ui._pointer_event('lcd', position, False)
+                tap((80, 280))
+                self.assertTrue(ui._delete_dialog)
+                self.assertTrue(newest.exists())
+                tap((350, 280))  # Back behind the modal must not receive input.
+                self.assertTrue(ui._delete_dialog)
+                tap((330, 190))
+                self.assertFalse(ui._delete_dialog)
+                self.assertEqual(ui.mode, 'saved')
+                self.assertTrue(newest.exists())
+                tap((80, 280))
+                tap((150, 190))
+                self.assertFalse(newest.exists())
+                self.assertTrue(older.exists())
+                self.assertEqual(ui.mode, 'review')
+                self.assertFalse(ui._delete_dialog)
+                self.assertEqual(ui.review.entries, [older])
+            finally:
+                ui.review.close()
+                ui.settings_view.close()
+
+    def test_delete_failure_keeps_file_and_dialog_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = save_capture(record(), directory)
+            ui = SpectrometerUI(review_directory=directory)
+            try:
+                ui._open_review()
+                ui.review.selected = 0
+                ui.review.display()
+                ui.review.future.result(timeout=5)
+                ui._poll_review()
+                ui._ask_delete()
+                with patch.object(Path, 'unlink', side_effect=PermissionError('Read only')):
+                    ui._confirm_delete()
+                self.assertTrue(path.exists())
+                self.assertTrue(ui._delete_dialog)
+                self.assertIn('Delete failed', ui._delete_message)
+            finally:
+                ui.review.close()
+                ui.settings_view.close()
+
     def test_newest_first_scroll_and_empty_list(self):
         with tempfile.TemporaryDirectory() as directory:
             review = ReviewList(directory)
@@ -57,9 +112,9 @@ class ReviewTests(unittest.TestCase):
                 ui.review.future.result(timeout=5)
                 ui._poll_review()
                 self.assertEqual(ui.mode, 'saved')
-                self.assertEqual([b[0] for b in ui.buttons], ['Back'])
+                self.assertEqual([b[0] for b in ui.buttons], ['Delete', 'Back'])
                 self.assertEqual(ui._camera_bar.get_at((0, 0))[:3], (255, 0, 0))
-                ui.buttons[0][2]()
+                ui.buttons[1][2]()
                 self.assertEqual(ui.mode, 'review')
                 self.assertEqual(ui.review.selected, 0)
                 ui.buttons[1][2]()

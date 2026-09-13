@@ -40,6 +40,7 @@ class SpectrometerUI:
         self.mode = "live"
         self._redraw = False
         self._list_start = None
+        self._delete_dialog = False
         if on_capture is None and camera is not None:
             on_capture = camera.request_capture
         self.spectrum_rect = pygame.Rect(8, 8, 464, 200)
@@ -117,7 +118,31 @@ class SpectrometerUI:
             self._plot.update(frame.intensity)
             self._camera_bar = pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB").copy()
             self.mode = "saved"
-            self.buttons = [("Back", pygame.Rect(8, 264, 464, 48), self._review_list)]
+            self._saved_buttons = [
+                ("Delete", pygame.Rect(8, 264, 228, 48), self._ask_delete),
+                ("Back", pygame.Rect(244, 264, 228, 48), self._review_list)]
+            self.buttons = self._saved_buttons
+
+    def _ask_delete(self):
+        self._delete_dialog = True
+        self._delete_message = "Delete this spectrum?"
+        self.buttons = [("Confirm", pygame.Rect(64, 168, 172, 48), self._confirm_delete),
+                        ("Cancel", pygame.Rect(244, 168, 172, 48), self._cancel_delete)]
+        self._redraw = True
+
+    def _cancel_delete(self):
+        self._delete_dialog = False
+        self.buttons = self._saved_buttons
+        self._redraw = True
+
+    def _confirm_delete(self):
+        if self.review.delete_loaded():
+            self._delete_dialog = False
+            self._review_list()
+        else:
+            LOGGER.error("%s", self.review.message)
+            self._delete_message = "Delete failed. Retry or cancel."
+        self._redraw = True
 
     def _pointer_motion(self, pointer, position):
         if self.mode == "review" and self._pointer == pointer and self._list_start is not None:
@@ -205,6 +230,22 @@ class SpectrometerUI:
             surface.blit(text, text.get_rect(center=rect.center))
         if self.mode in ("live", "saved") and self._camera_bar is not None:
             surface.blit(self._camera_bar, self.camera_slice_rect.move(1, 1))
+        if self._delete_dialog:
+            for label, rect, _ in self._saved_buttons:
+                pygame.draw.rect(surface, BUTTON, rect, border_radius=6)
+                text = font.render(label, True, TEXT)
+                surface.blit(text, text.get_rect(center=rect.center))
+            shade = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+            shade.fill((0, 0, 0, 160))
+            surface.blit(shade, (0, 0))
+            pygame.draw.rect(surface, PANEL, (48, 88, 384, 144), border_radius=8)
+            pygame.draw.rect(surface, BORDER, (48, 88, 384, 144), 1, border_radius=8)
+            text = font.render(self._delete_message, True, TEXT)
+            surface.blit(text, text.get_rect(center=(240, 114)))
+            small = pygame.font.Font(None, 18)
+            name = self.review.loaded_path.name if self.review.loaded_path else ""
+            text = small.render(name, True, MUTED)
+            surface.blit(text, text.get_rect(center=(240, 142)))
         for i, (label, rect, _) in enumerate(self.buttons):
             if not surface.get_clip().colliderect(rect):
                 continue

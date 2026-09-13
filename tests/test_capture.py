@@ -54,8 +54,11 @@ class CaptureTests(unittest.TestCase):
             with path.open("rb") as source:
                 record = pickle.load(source)
             request.make_array.assert_called_once_with("raw")
-            self.assertEqual(record["instrument_settings"], {"exposure_time_us": 4321})
-            self.assertEqual(record["raw_camera_format"], stream._raw_config)
+            self.assertEqual(record["instrument_settings"], {
+                "exposure_time_us": 4321,
+                "raw_camera_format": stream._raw_config,
+            })
+            self.assertNotIn("raw_camera_format", record)
             np.testing.assert_array_equal(record["spectrum_intensity"], [123, 456])
             self.assertEqual(record["timestamp"], timestamp)
 

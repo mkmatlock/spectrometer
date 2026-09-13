@@ -184,11 +184,13 @@ class CameraStream:
             metadata = request.get_metadata()
             record = {
                 "timestamp": timestamp,
-                "instrument_settings": {"exposure_time_us": metadata["ExposureTime"]},
+                "instrument_settings": {
+                    "exposure_time_us": metadata["ExposureTime"],
+                    "raw_camera_format": self._raw_config.copy(),
+                },
                 # make_array copies the packed sensor buffer before libcamera
                 # recycles it. Never retain the mapped camera buffer in a worker.
                 "raw_camera_output": request.make_array("raw"),
-                "raw_camera_format": self._raw_config.copy(),
                 "spectrum_intensity": frame.intensity.copy(),
                 "spectrum_roi": SPECTRUM_ROI,
             }

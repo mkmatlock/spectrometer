@@ -178,7 +178,7 @@ class SpectrometerUI:
 
             self._plot = SpectrumPlot()
             self._plot.update(frame.intensity)
-            self._camera_bar = pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB").copy()
+            self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
             self.mode = "saved"
             self._reset_peaks(frame.intensity)
             if self._scale_active:
@@ -206,9 +206,20 @@ class SpectrometerUI:
             self._redraw = True
             return
         self._peak_dialog = True
-        self.buttons = [("Label", pygame.Rect(64, 248, 172, 48), self._label_peak),
-                        ("Back", pygame.Rect(244, 248, 172, 48), self._back_peak)]
+        if index in self.calibration_settings["scale"]:
+            self.buttons = [("Modify", pygame.Rect(64, 248, 112, 48), self._label_peak),
+                            ("Delete", pygame.Rect(184, 248, 112, 48), self._delete_peak_label),
+                            ("Back", pygame.Rect(304, 248, 112, 48), self._back_peak)]
+        else:
+            self.buttons = [("Label", pygame.Rect(64, 248, 172, 48), self._label_peak),
+                            ("Back", pygame.Rect(244, 248, 172, 48), self._back_peak)]
         self._redraw = True
+
+    def _delete_peak_label(self):
+        if self._peaks.selected is not None:
+            pixel = int(self._peaks.indices[self._peaks.selected])
+            self.calibration_settings["scale"].pop(pixel, None)
+        self._back_peak()
 
     def _label_peak(self):
         if self._peaks.selected is not None:
@@ -280,7 +291,7 @@ class SpectrometerUI:
         from .camera import BAR_SIZE
         self._plot.update(frame.intensity)
         self._reset_peaks(frame.intensity)
-        self._camera_bar = pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB").copy()
+        self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
         self._back_filter()
 
     def _back_filter(self):
@@ -499,7 +510,7 @@ class SpectrometerUI:
         for pixel, value in sorted(self.calibration_settings["scale"].items()):
             if not 0 <= pixel < len(self._spectrum_intensity):
                 continue
-            x = area.left + round(pixel * (area.width - 1) / (len(self._spectrum_intensity) - 1))
+            x = area.right - 1 - round(pixel * (area.width - 1) / (len(self._spectrum_intensity) - 1))
             y = area.bottom - 1 - round(min(self._plot.maximum, max(0, self._spectrum_intensity[pixel]))
                                        * (area.height - 1) / self._plot.maximum)
             text = font.render(format(value, ".12g"), True, "#ffd166")
@@ -584,7 +595,7 @@ class SpectrometerUI:
             return False
         from .camera import BAR_SIZE
 
-        self._camera_bar = pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB").copy()
+        self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
         self._plot.update(frame.intensity)
         return True
 

@@ -18,7 +18,7 @@ class PeakSelection:
     def __init__(self, intensity, area, maximum):
         self.indices = peak_indices(intensity)
         self.positions = np.empty((len(self.indices), 2), dtype=float)
-        self.positions[:, 0] = area.left + self.indices * (area.width - 1) / (len(intensity) - 1)
+        self.positions[:, 0] = area.right - 1 - self.indices * (area.width - 1) / (len(intensity) - 1)
         self.positions[:, 1] = area.bottom - 1 - np.clip(np.asarray(intensity)[self.indices], 0, maximum) * ((area.height - 1) / maximum)
         self.selected = None
 

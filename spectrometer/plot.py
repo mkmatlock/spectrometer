@@ -27,7 +27,8 @@ class SpectrumPlot:
         # by stride or averaging would hide features smaller than a screen pixel.
         low = np.minimum.reduceat(values, self.edges[:-1])
         high = np.maximum.reduceat(values, self.edges[:-1])
-        envelope = np.column_stack((low, high)).reshape(-1)
+        # Reverse screen bins only; sensor indices and stored spectra stay unchanged.
+        envelope = np.column_stack((low[::-1], high[::-1])).reshape(-1)
         ys = self.AREA.bottom - 1 - np.rint(
             np.clip(envelope, 0, self.maximum) * ((self.AREA.height - 1) / self.maximum)
         ).astype(np.int32)
@@ -44,7 +45,7 @@ class SpectrumPlot:
             pygame.draw.line(surface, "#304050", (self.AREA.left, y), (self.AREA.right - 1, y))
         x0, _, x1, _ = SPECTRUM_ROI
         for value in (x0, 1000, 2000, x1 - 1):
-            x = self.AREA.left + round((value - x0) * (self.AREA.width - 1) / (x1 - x0 - 1))
+            x = self.AREA.right - 1 - round((value - x0) * (self.AREA.width - 1) / (x1 - x0 - 1))
             label = font.render(str(value), True, "#a9bacb")
             rect = label.get_rect(midtop=(x, self.AREA.bottom + 4))
             rect.clamp_ip(surface.get_rect())

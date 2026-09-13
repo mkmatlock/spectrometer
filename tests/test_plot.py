@@ -13,7 +13,7 @@ class PlotTests(unittest.TestCase):
         values[3] = 63750
         values[4] = 0
         plot.update(values)
-        self.assertEqual(plot.points[:2], [[1, 157], [1, 28]])
+        self.assertEqual(plot.points[-2:], [[462, 157], [462, 28]])
         self.assertEqual(len(plot.points), 924)
         self.assertEqual(plot.points[-1][0], 462)
 

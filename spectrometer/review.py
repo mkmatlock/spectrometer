@@ -10,22 +10,31 @@ import numpy as np
 from .camera import BAR_SIZE, PACKED_12_FORMATS, SENSOR_SIZE, SPECTRUM_ROI, SpectrumFrame
 
 
+def record_roi(record):
+    roi = tuple(record.get('spectrum_roi', SPECTRUM_ROI))
+    if (len(roi) != 4 or any(type(v) is not int or v % 2 for v in roi)
+            or not 0 <= roi[0] < roi[2] <= SENSOR_SIZE[0]
+            or not 0 <= roi[1] < roi[3] <= SENSOR_SIZE[1]
+            or roi[2] - roi[0] < BAR_SIZE[0]):
+        raise ValueError('Invalid sensor area')
+    return roi
+
+
 def load_spectrum(path):
     # These are the application's own local pickle files.
     with Path(path).open('rb') as source:
         record = pickle.load(source)
+    roi = record_roi(record)
     intensity = np.asarray(record['spectrum_intensity'])
-    if (intensity.shape != (3500,) or not np.issubdtype(intensity.dtype, np.number)
+    if (intensity.shape != (roi[2] - roi[0],) or not np.issubdtype(intensity.dtype, np.number)
             or not np.all(np.isfinite(intensity))):
         raise ValueError('Invalid spectrum intensity data')
-    if tuple(record.get('spectrum_roi', SPECTRUM_ROI)) != SPECTRUM_ROI:
-        raise ValueError('Capture uses an unsupported spectrum region')
     bar = record.get('spectrum_bar')
     if bar is None:
         bar = raw_bar(record)
     if not isinstance(bar, bytes) or len(bar) != BAR_SIZE[0] * BAR_SIZE[1] * 3:
         raise ValueError('Invalid camera bar data')
-    return SpectrumFrame(bar, intensity.copy())
+    return SpectrumFrame(bar, intensity.copy(), roi)
 
 
 def raw_rgb(record):
@@ -35,14 +44,18 @@ def raw_rgb(record):
     settings = record.get('instrument_settings', {})
     config = settings.get('raw_camera_format', record.get('raw_camera_format', {}))
     fmt = str(config.get('format', ''))
-    if fmt not in PACKED_12_FORMATS or tuple(config.get('size', ())) != SENSOR_SIZE:
+    size = tuple(config.get('size', ()))
+    if (fmt not in PACKED_12_FORMATS or len(size) != 2
+            or any(type(v) is not int or v <= 0 for v in size)):
         raise ValueError('Unsupported raw camera format')
     raw = np.asarray(record['raw_camera_output'])
-    stride = int(config.get('stride', SENSOR_SIZE[0] * 3 // 2))
-    if raw.dtype != np.uint8 or raw.size != SENSOR_SIZE[1] * stride:
+    stride = int(config.get('stride', size[0] * 3 // 2))
+    if raw.dtype != np.uint8 or raw.size != size[1] * stride:
         raise ValueError('Invalid packed camera buffer')
-    x0, y0, x1, y1 = SPECTRUM_ROI
-    triples = raw.reshape(SENSOR_SIZE[1], stride)[y0:y1, x0 * 3 // 2:x1 * 3 // 2].reshape(y1-y0, -1, 3)
+    x0, y0, x1, y1 = record_roi(record)
+    if x1 > size[0] or y1 > size[1]:
+        raise ValueError("Sensor area exceeds captured image")
+    triples = raw.reshape(size[1], stride)[y0:y1, x0 * 3 // 2:x1 * 3 // 2].reshape(y1-y0, -1, 3)
     # For an 8-bit preview the top eight bits are already the first two bytes
     # of each CSI2 packed pair. The third byte contains the low four bits.
     bayer = np.empty((y1-y0, x1-x0), dtype=np.uint8)
@@ -61,8 +74,7 @@ def load_channels(path):
     import cv2
     with Path(path).open('rb') as source:
         record = pickle.load(source)
-    if tuple(record.get('spectrum_roi', SPECTRUM_ROI)) != SPECTRUM_ROI:
-        raise ValueError('Unsupported spectrum region')
+    roi = record_roi(record)
     rgb = raw_rgb(record)
     preview = cv2.resize(rgb, BAR_SIZE, interpolation=cv2.INTER_AREA)
     result = {}
@@ -71,7 +83,7 @@ def load_channels(path):
                             cv2.REDUCE_SUM, dtype=cv2.CV_32S).reshape(-1)
         bar = np.zeros_like(preview)
         bar[:, :, index] = preview[:, :, index]
-        result[channel] = SpectrumFrame(bar.tobytes(), totals)
+        result[channel] = SpectrumFrame(bar.tobytes(), totals, roi)
     return result
 
 
@@ -113,7 +125,7 @@ class ReviewList:
     def scroll(self, rows):
         self.offset = max(0, min(max(0, len(self.entries) - self.VISIBLE), self.offset + rows))
 
-    def display(self):
+    def display(self, loader=load_spectrum):
         if self.future is not None:
             return
         if self.selected is None:
@@ -121,7 +133,7 @@ class ReviewList:
             return
         self.message = 'Loading capture...'
         self._loading_path = self.entries[self.selected]
-        self.future = self._executor.submit(load_spectrum, self._loading_path)
+        self.future = self._executor.submit(loader, self._loading_path)
 
     def poll(self):
         if self.future is None or not self.future.done():

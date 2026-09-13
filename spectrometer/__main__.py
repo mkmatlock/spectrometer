@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+from copy import deepcopy
 
 
 def main():
@@ -9,8 +10,10 @@ def main():
     parser.add_argument("--windowed", action="store_true", help="Open a desktop preview")
     parser.add_argument("--touch-debug", action="store_true",
                         help="Log raw/mapped touch coordinates and button actions")
-    parser.add_argument("--fps", type=float, default=5.0, help="Requested camera fps (default: 5)")
-    parser.add_argument("--exposure-us", type=int, help="Manual exposure in microseconds (default: auto)")
+    parser.add_argument("--fps", type=float, help="Save requested camera fps (default: stored value, initially 5)")
+    exposure = parser.add_mutually_exclusive_group()
+    exposure.add_argument("--exposure-us", type=int, help="Save manual exposure in microseconds")
+    exposure.add_argument("--auto-exposure", action="store_true", help="Save automatic exposure mode")
     parser.add_argument("--no-camera", action="store_true", help="Run the UI without camera acquisition")
     parser.add_argument("--performance-debug", action="store_true",
                         help="Log camera processing and LCD transfer times")
@@ -23,13 +26,23 @@ def main():
 
     from .ui import SpectrometerUI
     from .camera import CameraSettings, CameraStream
+    from .config import SettingsStore
 
     try:
-        settings = CameraSettings(frame_rate=args.fps, exposure_us=args.exposure_us)
-    except ValueError as exc:
+        store = SettingsStore()
+        overrides = {}
+        if args.fps is not None:
+            overrides['frame_rate'] = args.fps
+        if args.exposure_us is not None or args.auto_exposure:
+            overrides['exposure_us'] = args.exposure_us
+        store.update(camera=overrides)
+        settings = CameraSettings(**store.data['camera'], roi=store.data['calibration']['sensor_area'])
+    except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
     SpectrometerUI(fullscreen=not args.windowed,
+                   calibration_settings=deepcopy(store.data['calibration']),
+                   on_calibration_changed=lambda values: store.update(calibration=values),
                    camera=None if args.no_camera else CameraStream(settings)).run()
 
 

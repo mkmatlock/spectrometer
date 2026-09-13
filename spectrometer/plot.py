@@ -11,8 +11,9 @@ class SpectrumPlot:
     AREA = pygame.Rect(1, 28, 462, 130)
     TRACE = (103, 219, 185)
 
-    def __init__(self):
-        x0, y0, x1, y1 = SPECTRUM_ROI
+    def __init__(self, roi=SPECTRUM_ROI):
+        self.roi = tuple(roi)
+        x0, y0, x1, y1 = self.roi
         self.maximum = (y1 - y0) * 255
         self.edges = np.linspace(0, x1 - x0, self.AREA.width + 1, dtype=np.int32)
         self._xs = np.repeat(np.arange(self.AREA.left, self.AREA.right), 2)
@@ -21,7 +22,7 @@ class SpectrumPlot:
 
     def update(self, intensity):
         values = np.asarray(intensity)
-        if values.shape != (SPECTRUM_ROI[2] - SPECTRUM_ROI[0],):
+        if values.shape != (self.roi[2] - self.roi[0],):
             raise ValueError("Spectrum must contain one total per ROI column")
         # Preserve both narrow emission peaks and absorption troughs. Decimation
         # by stride or averaging would hide features smaller than a screen pixel.
@@ -43,8 +44,8 @@ class SpectrumPlot:
         for fraction in (0, 0.25, 0.5, 0.75, 1):
             y = self.AREA.bottom - 1 - round(fraction * (self.AREA.height - 1))
             pygame.draw.line(surface, "#304050", (self.AREA.left, y), (self.AREA.right - 1, y))
-        x0, _, x1, _ = SPECTRUM_ROI
-        for value in (x0, 1000, 2000, x1 - 1):
+        x0, _, x1, _ = self.roi
+        for value in np.arange(round(x0 / 500) * 500, x1, 500, dtype=int):
             x = self.AREA.right - 1 - round((value - x0) * (self.AREA.width - 1) / (x1 - x0 - 1))
             label = font.render(str(value), True, "#a9bacb")
             rect = label.get_rect(midtop=(x, self.AREA.bottom + 4))

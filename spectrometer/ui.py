@@ -24,7 +24,8 @@ class SpectrometerUI:
     """
 
     def __init__(self, *, fullscreen=True, on_capture=None, on_review=None,
-                 on_settings=None, camera=None, review_directory=None, calibration_settings=None):
+                 on_settings=None, camera=None, review_directory=None, calibration_settings=None,
+                 on_calibration_changed=None):
         self.fullscreen = fullscreen
         self.camera = camera
         self._camera_bar = None
@@ -43,12 +44,15 @@ class SpectrometerUI:
         self._delete_dialog = False
         self._filter_dialog = False
         self._scale_active = False
+        self._sensor_active = False
+        self._sensor = None
         self._peak_dialog = False
         self._peak_touch = None
         self._peaks = None
         self._review_peak_label = None
         self.calibration_settings = calibration_settings if calibration_settings is not None else {}
         self.calibration_settings.setdefault("scale", {})
+        self._on_calibration_changed = on_calibration_changed
         self._keypad_open = False
         self._label_input = ""
         self._calibration_dialog = False
@@ -96,9 +100,10 @@ class SpectrometerUI:
             self._calibration_message = "Choose a calibration mode"
         else:
             name = self._calibration_rows[self._calibration_selected][0]
-            if name == "Scale":
+            if name in ("Scale", "Sensor"):
                 self._calibration_dialog = False
-                self._scale_active = True
+                self._scale_active = name == "Scale"
+                self._sensor_active = name == "Sensor"
                 self._live_view = (self._plot, self._camera_bar)
                 self.review.refresh()
                 self._review_list()
@@ -135,7 +140,7 @@ class SpectrometerUI:
         self._peak_touch = None
         self.review.cancel_filter()
         self.mode = "review"
-        self.buttons = [("Display", pygame.Rect(8, 264, 228, 48), self.review.display),
+        self.buttons = [("Display", pygame.Rect(8, 264, 228, 48), self._display_capture),
                         ("Back", pygame.Rect(244, 264, 228, 48), self._exit_review)]
         self._redraw = True
 
@@ -143,8 +148,10 @@ class SpectrometerUI:
         if self.review.future is not None:
             self.review.future.cancel()
             self.review.future = None
-        if self._scale_active:
+        if self._scale_active or self._sensor_active:
             self._scale_active = False
+            self._sensor_active = False
+            self._sensor = None
             self._plot, self._camera_bar = self._live_view
             self.mode = "settings"
             self.buttons = self._settings_buttons
@@ -173,11 +180,19 @@ class SpectrometerUI:
         if was_loading and self.review.future is None:
             self._redraw = True
         if frame is not None:
+            if self._sensor_active:
+                from .sensor import SensorSelection
+                from .camera import SPECTRUM_ROI
+                self._sensor = SensorSelection(frame, self.calibration_settings.get('sensor_area', SPECTRUM_ROI))
+                self.mode = 'sensor'
+                self.buttons = [("Accept", pygame.Rect(8, 264, 228, 48), self._accept_sensor),
+                                ("Cancel", pygame.Rect(244, 264, 228, 48), self._exit_review)]
+                return
             from .plot import SpectrumPlot
             from .camera import BAR_SIZE
 
-            self._plot = SpectrumPlot()
-            self._plot.update(frame.intensity)
+            self._plot = SpectrumPlot(frame.roi)
+            self._update_plot(frame)
             self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
             self.mode = "saved"
             self._reset_peaks(frame.intensity)
@@ -190,11 +205,51 @@ class SpectrometerUI:
                 ("Back", pygame.Rect(323, 264, 149, 48), self._review_list)]
             self.buttons = self._saved_buttons
 
+    def _display_capture(self):
+        if self._sensor_active:
+            from .sensor import load_sensor
+            self.review.display(load_sensor)
+        else:
+            self.review.display()
+
+    def _accept_sensor(self):
+        from .config import DEFAULTS, validate
+        roi = self._sensor.roi
+        updated = dict(self.calibration_settings, sensor_area=roi)
+        camera_settings = dict(DEFAULTS['camera'], resolution=self._sensor.resolution)
+        if self.camera is not None:
+            camera_settings['resolution'] = self.camera.settings.resolution
+        try:
+            validate({'camera': camera_settings, 'calibration': updated})
+            if self._on_calibration_changed is not None:
+                self._on_calibration_changed(updated)
+        except ValueError:
+            LOGGER.exception('Could not save sensor area')
+            self._sensor.message = 'ROI must fit image; width at least 462 px'
+            self._redraw = True
+            return
+        except OSError:
+            LOGGER.exception('Could not save sensor area')
+            self._sensor.message = 'Could not save settings. Retry or cancel.'
+            self._redraw = True
+            return
+        self.calibration_settings.update(updated)
+        if self.camera is not None:
+            self.camera.set_roi(roi)
+        self._exit_review()
+
+    def _update_plot(self, frame):
+        from .plot import SpectrumPlot
+        if self._plot.roi != tuple(frame.roi):
+            self._plot = SpectrumPlot(frame.roi)
+            self._redraw = True
+        self._plot.update(frame.intensity)
+
     def _reset_peaks(self, intensity):
         from .scale import PeakSelection
         self._peaks = PeakSelection(intensity,
                                     self._plot.AREA.move(self.spectrum_rect.topleft),
-                                    self._plot.maximum)
+                                    self._plot.maximum, self._plot.roi[0])
         self._review_peak_label = None
         self._spectrum_intensity = intensity
 
@@ -218,7 +273,8 @@ class SpectrometerUI:
     def _delete_peak_label(self):
         if self._peaks.selected is not None:
             pixel = int(self._peaks.indices[self._peaks.selected])
-            self.calibration_settings["scale"].pop(pixel, None)
+            if not self._update_scale(pixel, None):
+                return
         self._back_peak()
 
     def _label_peak(self):
@@ -257,9 +313,29 @@ class SpectrometerUI:
             self._label_error = "Enter a numeric value"
             self._redraw = True
             return
-        self.calibration_settings["scale"][self._label_pixel] = value
+        if not self._update_scale(self._label_pixel, value):
+            return
         self._keypad_open = False
         self._back_peak()
+
+    def _update_scale(self, pixel, value):
+        labels = self.calibration_settings["scale"].copy()
+        if value is None:
+            labels.pop(pixel, None)
+        else:
+            labels[pixel] = value
+        updated = dict(self.calibration_settings, scale=labels)
+        try:
+            if self._on_calibration_changed is not None:
+                self._on_calibration_changed(updated)
+        except (OSError, ValueError):
+            LOGGER.exception("Could not save calibration settings")
+            self._label_error = "Could not save settings"
+            self._peak_message = "Could not save settings"
+            self._redraw = True
+            return False
+        self.calibration_settings.update(updated)
+        return True
 
     def _cancel_label(self):
         self._keypad_open = False
@@ -289,7 +365,7 @@ class SpectrometerUI:
 
     def _apply_filter(self, frame):
         from .camera import BAR_SIZE
-        self._plot.update(frame.intensity)
+        self._update_plot(frame)
         self._reset_peaks(frame.intensity)
         self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
         self._back_filter()
@@ -322,6 +398,9 @@ class SpectrometerUI:
         self._redraw = True
 
     def _pointer_motion(self, pointer, position):
+        if self.mode == 'sensor' and self._pointer == pointer and self._sensor.start is not None:
+            self._sensor.drag(position)
+            self._redraw = True
         if self.mode == "review" and self._pointer == pointer and self._list_start is not None:
             start_y, offset = self._list_start
             rows = int((start_y - position[1]) / self.review.ROW_HEIGHT)
@@ -366,6 +445,8 @@ class SpectrometerUI:
         if down and self._pointer is None:
             self._pointer = pointer
             self._pressed = self._button_at(position)
+            if self.mode == 'sensor' and self._sensor.rect.collidepoint(position):
+                self._sensor.start = self._sensor.point(position)
             if (self.mode == "saved" and self._peaks is not None
                     and not (self._peak_dialog or self._filter_dialog or self._delete_dialog)
                     and self._plot.AREA.move(self.spectrum_rect.topleft).collidepoint(position)):
@@ -376,6 +457,13 @@ class SpectrometerUI:
             if self.mode == "review" and 34 <= position[1] < 244:
                 self._list_start = (position[1], self.review.offset)
         elif not down and self._pointer == pointer:
+            if self.mode == 'sensor' and self._sensor.start is not None:
+                if self._sensor.point(position) != self._sensor.start:
+                    self._sensor.drag(position)
+                self._sensor.start = None
+                self._pointer = self._pressed = None
+                self._redraw = True
+                return
             if self._peak_touch is not None:
                 self._peak_touch = None
                 self._pointer = self._pressed = None
@@ -414,10 +502,12 @@ class SpectrometerUI:
             self._draw_review(surface, font)
         if self.mode == "settings":
             self._draw_settings(surface, font)
+        if self.mode == 'sensor':
+            self._sensor.draw(surface, font)
         if self.mode in ("live", "saved") and surface.get_clip().colliderect(self.spectrum_rect):
             self._plot.draw(surface, self.spectrum_rect.topleft)
         for rect, label in ((self.camera_slice_rect, "Raw camera slice — placeholder"),):
-            if self.mode in ("review", "settings"):
+            if self.mode in ("review", "settings", "sensor"):
                 break
             if not surface.get_clip().colliderect(rect):
                 continue
@@ -507,7 +597,8 @@ class SpectrometerUI:
         area = self._plot.AREA.move(self.spectrum_rect.topleft)
         font = pygame.font.Font(None, 18)
         occupied = []
-        for pixel, value in sorted(self.calibration_settings["scale"].items()):
+        for sensor_pixel, value in sorted(self.calibration_settings["scale"].items()):
+            pixel = sensor_pixel - self._plot.roi[0]
             if not 0 <= pixel < len(self._spectrum_intensity):
                 continue
             x = area.right - 1 - round(pixel * (area.width - 1) / (len(self._spectrum_intensity) - 1))
@@ -548,6 +639,8 @@ class SpectrometerUI:
         header = self.review.message or ("Review captures" if self.review.entries else "No captures found")
         if self._scale_active and not self.review.message and self.review.entries:
             header = "Scale calibration: select a capture"
+        if self._sensor_active and not self.review.message and self.review.entries:
+            header = "Sensor calibration: select a capture"
         surface.blit(small.render(header[:65], True, TEXT), (8, 10))
         for row, path in enumerate(self.review.entries[self.review.offset:self.review.offset + 5]):
             index = row + self.review.offset
@@ -596,7 +689,7 @@ class SpectrometerUI:
         from .camera import BAR_SIZE
 
         self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
-        self._plot.update(frame.intensity)
+        self._update_plot(frame)
         return True
 
     def _run_lcd(self):
@@ -626,6 +719,8 @@ class SpectrometerUI:
                             self._pointer = self._pressed = None
                             self._list_start = None
                             self._peak_touch = None
+                            if self._sensor is not None:
+                                self._sensor.start = None
                             last_position = None
                             if not active:
                                 hardware.set_screen_active(False)
@@ -704,6 +799,8 @@ class SpectrometerUI:
                 self._handle_pointer(event)
                 if event.type == pygame.WINDOWFOCUSLOST:
                     self._pointer = self._pressed = None
+                    if self._sensor is not None:
+                        self._sensor.start = None
                 new_frame = self._poll_camera()
                 self._poll_review()
                 self._poll_settings()

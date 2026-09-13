@@ -1,6 +1,6 @@
 """Full-resolution IMX477 acquisition with an OpenCV spectrum-bar preview."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import math
 import threading
@@ -22,6 +22,8 @@ PACKED_12_FORMATS = {"S%s12_CSI2P" % order for order in
 class CameraSettings:
     frame_rate: float = 5.0
     exposure_us: int = None  # None keeps automatic exposure enabled.
+    resolution: tuple = SENSOR_SIZE
+    roi: tuple = SPECTRUM_ROI
 
     def __post_init__(self):
         if not math.isfinite(self.frame_rate) or self.frame_rate <= 0:
@@ -30,13 +32,13 @@ class CameraSettings:
             raise ValueError("Exposure must be a positive number of microseconds")
 
 
-def spectrum_bar(frame):
+def spectrum_bar(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE):
     """Crop full-resolution BGR pixels before resizing and converting to RGB."""
     import cv2
 
-    if frame.shape != (SENSOR_SIZE[1], SENSOR_SIZE[0], 3):
-        raise ValueError("Expected a 4056x3040 three-channel camera frame")
-    x0, y0, x1, y1 = SPECTRUM_ROI
+    if frame.shape != (resolution[1], resolution[0], 3):
+        raise ValueError(f"Expected a {resolution[0]}x{resolution[1]} three-channel camera frame")
+    x0, y0, x1, y1 = roi
     crop = frame[y0:y1, x0:x1]
     preview = cv2.resize(crop, BAR_SIZE, interpolation=cv2.INTER_AREA)
     return cv2.cvtColor(preview, cv2.COLOR_BGR2RGB).tobytes()
@@ -46,17 +48,18 @@ def spectrum_bar(frame):
 class SpectrumFrame:
     bar: bytes
     intensity: object  # Owned int32 array, one total per sensor column.
+    roi: tuple = SPECTRUM_ROI
 
 
-def process_frame(frame):
+def process_frame(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE):
     """Sum grayscale intensity vertically in the original, unscaled ROI."""
     import cv2
 
-    bar = spectrum_bar(frame)
-    x0, y0, x1, y1 = SPECTRUM_ROI
+    bar = spectrum_bar(frame, roi, resolution)
+    x0, y0, x1, y1 = roi
     gray = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
     totals = cv2.reduce(gray, 0, cv2.REDUCE_SUM, dtype=cv2.CV_32S).reshape(-1)
-    return SpectrumFrame(bar, totals)
+    return SpectrumFrame(bar, totals, tuple(roi))
 
 
 class CameraStream:
@@ -92,9 +95,9 @@ class CameraStream:
         self._camera = Picamera2()
         try:
             config = self._camera.create_video_configuration(
-                main={"size": SENSOR_SIZE, "format": "RGB888"},  # BGR in memory
-                raw={"size": SENSOR_SIZE, "format": "SRGGB12_CSI2P"},
-                sensor={"output_size": SENSOR_SIZE, "bit_depth": 12},
+                main={"size": self.settings.resolution, "format": "RGB888"},  # BGR in memory
+                raw={"size": self.settings.resolution, "format": "SRGGB12_CSI2P"},
+                sensor={"output_size": self.settings.resolution, "bit_depth": 12},
                 buffer_count=2, queue=False)
             self._camera.configure(config)
             # Query timing only after configuring the exact mode; sensor_modes
@@ -124,9 +127,9 @@ class CameraStream:
             # libcamera may adjust Bayer order. That does not change resolution,
             # bit depth, or packing, and the ISP handles colour conversion for
             # the processed main stream used by our preview.
-            if raw_size != SENSOR_SIZE or raw_format not in PACKED_12_FORMATS:
+            if raw_size != tuple(self.settings.resolution) or raw_format not in PACKED_12_FORMATS:
                 raise RuntimeError(
-                    "Camera did not configure packed 4056:3040:12:P mode; "
+                    f"Camera did not configure packed {self.settings.resolution[0]}:{self.settings.resolution[1]}:12:P mode; "
                     "actual raw size=%r format=%r" % (raw_size, raw_format))
             LOGGER.info("Configured raw stream: size=%s format=%s", raw_size, raw_format)
             self._raw_config = dict(raw)
@@ -136,7 +139,8 @@ class CameraStream:
             self._camera.start(show_preview=False)
             self._started = True
             LOGGER.info("Camera startup completed in %.2f s", time.monotonic() - started)
-            LOGGER.info("Camera mode 4056:3040:12:P; target %.2f fps; exposure %s",
+            LOGGER.info("Camera mode %s:%s:12:P; target %.2f fps; exposure %s",
+                        *self.settings.resolution,
                         1_000_000 / duration, self.settings.exposure_us or "automatic")
         except BaseException:
             self.close()
@@ -153,7 +157,7 @@ class CameraStream:
             self._capture_pending = False
         try:
             with MappedArray(request, "main", write=False) as mapped:
-                frame = process_frame(mapped.array)
+                frame = process_frame(mapped.array, self.settings.roi, self.settings.resolution)
             metadata = request.get_metadata()
             if not self._logged_frame:
                 LOGGER.info("Camera first frame: duration=%s us, exposure=%s us",
@@ -189,7 +193,7 @@ class CameraStream:
             return {
                 "frame_rate": (1_000_000 / self._frame_duration_us
                                if self._frame_duration_us else self.settings.frame_rate),
-                "resolution": SENSOR_SIZE,
+                "resolution": self.settings.resolution,
                 "exposure_us": self._exposure_us,
             }
 
@@ -207,7 +211,7 @@ class CameraStream:
                 "raw_camera_output": request.make_array("raw"),
                 "spectrum_intensity": frame.intensity.copy(),
                 "spectrum_bar": frame.bar,
-                "spectrum_roi": SPECTRUM_ROI,
+                "spectrum_roi": frame.roi,
             }
             self._writer.submit(self._save_capture, record)
         except Exception:
@@ -258,6 +262,10 @@ class CameraStream:
         with self._lock:
             self._latest = None
         LOGGER.info("Camera paused")
+
+    def set_roi(self, roi):
+        """Apply an accepted sensor area while acquisition is paused."""
+        self.settings = replace(self.settings, roi=tuple(roi))
 
     def resume(self):
         """Restart the existing configuration without probing or reallocating."""

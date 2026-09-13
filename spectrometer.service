@@ -1,6 +1,6 @@
 [Unit]
 Description=Spectrometer user interface
-After=multi-user.target
+After=local-fs.target
 
 [Service]
 Type=idle

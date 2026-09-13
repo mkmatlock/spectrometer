@@ -1,10 +1,17 @@
 """Bridge the supplied SPI LCD and I2C touchscreen drivers to the UI."""
 
 from contextlib import ExitStack
+import logging
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LCDBackend:
     """Own the hardware resources; importing this module needs no Pi libraries."""
+
+    def __init__(self):
+        self._last_touch = None
 
     def __enter__(self):
         from .st7796 import st7796
@@ -36,9 +43,20 @@ class LCDBackend:
         self.touch.read_touch_data()
         count, coordinates = self.touch.get_touch_xy()
         if not count:
+            if self._last_touch is not None:
+                LOGGER.debug("Touch released")
+            self._last_touch = None
             return None
-        # The driver already mirrors native X (319 - raw_x). Swap its axes
-        # to match the LCD driver's landscape MADCTL setting (0x78).
+        # Undo the driver's native X mirror before using it as landscape Y.
+        # Physical button samples confirm UI = (479 - raw_y, raw_x).
         point = coordinates[0]
-        return (max(0, min(479, point["y"])),
-                max(0, min(319, point["x"])))
+        position = (479 - point["y"], 319 - point["x"])
+        sample = (count, point["x"], point["y"])
+        if sample != self._last_touch:
+            LOGGER.debug("Touch count=%s raw=(%s, %s) UI=%s", count,
+                         319 - point["x"], point["y"], position)
+        self._last_touch = sample
+        # Do not turn an invalid sample into a press on a screen edge.
+        if not (0 <= position[0] < 480 and 0 <= position[1] < 320):
+            return None
+        return position

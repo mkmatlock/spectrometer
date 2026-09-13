@@ -9,10 +9,7 @@ dtparam=act_led_trigger=none
 Enable SPI and I2C in `sudo raspi-config` and reboot if prompted. The runtime user
 needs access to the `spi`, `i2c`, and `gpio` groups. 
 
-
-# Set up the hardware
-
-
+Finally, hook up the waveshare device according to instructions at 
 
 # Install the software
 
@@ -42,11 +39,14 @@ The supplied drivers use BCM pins 27 (LCD reset), 25 (LCD data/command), 18
 I2C bus pins. Wiring must match these assignments. Do not run another display
 service or framebuffer driver that owns the same SPI device or GPIO pins.
 
-The LCD driver selects landscape orientation. Touch coordinates are mapped from
-its native portrait coordinates to match: `(landscape_x, landscape_y) =
-(raw_y, 319 - raw_x)`. The supplied touch driver already performs the X inversion,
-so the hardware adapter only swaps its axes. Verify alignment at each button on
-the physical panel.
 
 Rendering uses Pygame software surfaces and Pillow to pass RGB images to the
 LCD driver's RGB565 conversion. No camera access or acquisition is started.
+
+
+## Touch diagnostics
+```sh
+python3 -m spectrometer --touch-debug
+```
+
+Touch and release each button. Logs show raw controller coordinates, mapped UI coordinates, releases, and placeholder button actions. Button centers are approximately `(82, 288)`, `(240, 288)`, and `(397, 288)`. If there are no touch logs, the controller is not reporting contacts; if mapped coordinates miss these locations, the panel needs a different coordinate mapping. Exit with Ctrl+C, then run `sudo systemctl start spectrometer` to restore the service.

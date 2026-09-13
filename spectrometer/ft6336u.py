@@ -32,6 +32,9 @@ class ft6336u():
         self.coordinates = [{"x": 0, "y": 0} for _ in range(FT6336U_LCD_TOUCH_MAX_POINTS)]
         self.point_count = 0
         self.touch_rst()
+        # Use normal working mode and polling mode, matching the UI loop.
+        self.I2C.write_byte_data(FT6336U_ADDRESS, 0x00, 0x00)
+        self.I2C.write_byte_data(FT6336U_ADDRESS, 0xA4, 0x00)
     
     def Int_Callback(self):
         self.read_touch_data()
@@ -53,23 +56,25 @@ class ft6336u():
         return data
     
     def read_touch_data(self):
-        TOUCH_NUM_REG = 0x02
-        TOUCH_XY_REG = 0x03
-        
-        buf = self.read_bytes(TOUCH_NUM_REG, 1)
+        # Read TD_STATUS and both point records in one transaction so a
+        # release between separate reads cannot mix two different samples.
+        buf = self.read_bytes(0x02, 1 + 6 * FT6336U_LCD_TOUCH_MAX_POINTS)
         self.point_count = 0
+        if not buf or len(buf) != 13:
+            return
         count = (buf[0] & 0x0f) if buf else 0
         if 0 < count <= FT6336U_LCD_TOUCH_MAX_POINTS:
-            buf = self.read_bytes(TOUCH_XY_REG, 6 * count)
-            for i in range(2):
-                self.coordinates[i]["x"] = 0
-                self.coordinates[i]["y"] = 0
-            
-            if buf and len(buf) == 6 * count:
-                self.point_count = count
-                for i in range(count):
-                    self.coordinates[i]["x"] = 319 - (((buf[(i * 6) + 0] & 0x0f) << 8) + buf[(i * 6) + 1])
-                    self.coordinates[i]["y"] = ((buf[(i * 6) + 2] & 0x0f) << 8) + buf[(i * 6) + 3]
+            for i in range(count):
+                offset = 1 + 6 * i
+                event = buf[offset] >> 6
+                # 0 = down, 2 = contact; 1 = up, 3 = reserved.
+                if event not in (0, 2):
+                    continue
+                self.coordinates[self.point_count]["x"] = 319 - (
+                    ((buf[offset] & 0x0f) << 8) | buf[offset + 1])
+                self.coordinates[self.point_count]["y"] = (
+                    ((buf[offset + 2] & 0x0f) << 8) | buf[offset + 3])
+                self.point_count += 1
     
     def get_touch_xy(self):
         point = self.point_count

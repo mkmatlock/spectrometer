@@ -244,7 +244,10 @@ class st7796():
         Image = Image.convert("RGB")
         if imwidth == self.height and imheight ==  self.width:
             # print("Landscape screen")
-            img = self.np.asarray(Image)
+            # This panel mirrors landscape columns with the vendor's 0x78
+            # setup. Reverse columns explicitly, without changing scan timing
+            # or the vertical orientation along with the MADCTL mirror bits.
+            img = self.np.asarray(Image)[:, ::-1, :]
             pix = self.np.zeros((self.width, self.height,2), dtype = self.np.uint8)
             #RGB888 >> RGB565
             pix[...,[0]] = self.np.add(self.np.bitwise_and(img[...,[0]],0xF8),self.np.right_shift(img[...,[1]],5))

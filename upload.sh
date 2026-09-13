@@ -6,5 +6,3 @@ put -r spectrometer
 put spectrometer.service
 put setup.sh
 EOF
-
-ssh -oPort=$PORT $USER@$HOST

@@ -1,0 +1,1 @@
+When updating the README after code changes, only include critical information necessary to execute the program or any information required for working with debuging modes. If there is information you require for immediate debugging and feedback, place it in the chat rather than in a README.

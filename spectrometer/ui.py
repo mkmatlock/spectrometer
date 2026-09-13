@@ -50,7 +50,10 @@ class SpectrometerUI:
         if on_capture is None and camera is not None:
             on_capture = camera.request_capture
         self.spectrum_rect = pygame.Rect(8, 8, 464, 200)
-        self.camera_slice_rect = pygame.Rect(8, 216, 464, 40)
+        # Match the image pixels (inside its border) to the graph's data span.
+        self.camera_slice_rect = pygame.Rect(
+            self.spectrum_rect.x + self._plot.AREA.x - 1, 216,
+            self._plot.AREA.width + 2, 40)
         self.buttons = [
             ("Capture", pygame.Rect(8, 264, 149, 48), on_capture),
             ("Review", pygame.Rect(165, 264, 150, 48), on_review or self._open_review),

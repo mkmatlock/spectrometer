@@ -8,7 +8,7 @@ from .camera import SPECTRUM_ROI
 
 class SpectrumPlot:
     SIZE = (464, 200)
-    AREA = pygame.Rect(52, 28, 400, 130)
+    AREA = pygame.Rect(1, 28, 462, 130)
     TRACE = (103, 219, 185)
 
     def __init__(self):
@@ -38,12 +38,10 @@ class SpectrumPlot:
         surface.fill("#1b2632")
         pygame.draw.rect(surface, "#405367", surface.get_rect(), 1, border_radius=4)
         font = pygame.font.Font(None, 18)
-        surface.blit(font.render("Total intensity", True, "#a9bacb"), (8, 5))
-        for value in (0, self.maximum // 2, self.maximum):
-            y = self.AREA.bottom - 1 - round(value * (self.AREA.height - 1) / self.maximum)
+        surface.blit(font.render("Intensity", True, "#a9bacb"), (8, 5))
+        for fraction in (0, 0.25, 0.5, 0.75, 1):
+            y = self.AREA.bottom - 1 - round(fraction * (self.AREA.height - 1))
             pygame.draw.line(surface, "#304050", (self.AREA.left, y), (self.AREA.right - 1, y))
-            label = font.render(str(value), True, "#a9bacb")
-            surface.blit(label, label.get_rect(midright=(self.AREA.left - 5, y)))
         x0, _, x1, _ = SPECTRUM_ROI
         for value in (x0, 1000, 2000, x1 - 1):
             x = self.AREA.left + round((value - x0) * (self.AREA.width - 1) / (x1 - x0 - 1))
@@ -51,7 +49,7 @@ class SpectrumPlot:
             rect = label.get_rect(midtop=(x, self.AREA.bottom + 4))
             rect.clamp_ip(surface.get_rect())
             surface.blit(label, rect)
-        label = font.render("Sensor X (pixels)", True, "#a9bacb")
+        label = font.render("Pixel", True, "#a9bacb")
         surface.blit(label, label.get_rect(midbottom=(self.AREA.centerx, self.SIZE[1] - 3)))
         return surface
 
@@ -61,7 +59,7 @@ class SpectrumPlot:
         surface.blit(self._background, position)
         if self.points is not None:
             # Draw on a subsurface to keep point coordinates local and respect
-            # the caller's dirty rectangle without transforming 800 points.
+            # the caller's dirty rectangle without transforming the trace points.
             patch = surface.subsurface(pygame.Rect(position, self.SIZE))
             patch.set_clip(surface.get_clip().move(-position[0], -position[1]))
             pygame.draw.lines(patch, self.TRACE, False, self.points)

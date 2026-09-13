@@ -13,9 +13,29 @@ class PlotTests(unittest.TestCase):
         values[3] = 63750
         values[4] = 0
         plot.update(values)
-        self.assertEqual(plot.points[:2], [[52, 157], [52, 28]])
-        self.assertEqual(len(plot.points), 800)
-        self.assertEqual(plot.points[-1][0], 451)
+        self.assertEqual(plot.points[:2], [[1, 157], [1, 28]])
+        self.assertEqual(len(plot.points), 924)
+        self.assertEqual(plot.points[-1][0], 462)
+
+    def test_grid_has_five_lines_and_image_matches_plot_span(self):
+        from spectrometer.camera import BAR_SIZE
+        from spectrometer.ui import SpectrometerUI
+
+        pygame.font.init()
+        ui = SpectrometerUI()
+        try:
+            background = ui._plot._make_background()
+            grid_rows = [y for y in range(28, 158)
+                         if background.get_at((200, y))[:3] == (48, 64, 80)]
+            self.assertEqual(grid_rows, [28, 60, 93, 125, 157])
+            image = ui.camera_slice_rect.inflate(-2, -2)
+            curve = ui._plot.AREA.move(ui.spectrum_rect.topleft)
+            self.assertEqual((image.left, image.right), (curve.left, curve.right))
+            self.assertEqual(image.size, BAR_SIZE)
+        finally:
+            ui.review.close()
+            ui.settings_view.close()
+            pygame.font.quit()
 
     def test_axes_cached_and_trace_changes_on_update(self):
         pygame.font.init()

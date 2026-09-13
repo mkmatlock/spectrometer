@@ -117,7 +117,7 @@ class LCDUITests(unittest.TestCase):
             ui.run()
         self.assertEqual(hardware.present.call_count, 2)
         regions = hardware.present.call_args.args[1]
-        self.assertEqual(regions, [pygame.Rect(60, 36, 400, 130),
+        self.assertEqual(regions, [pygame.Rect(9, 36, 462, 130),
                                    pygame.Rect(9, 217, 462, 38)])
 
 

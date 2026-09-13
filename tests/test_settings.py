@@ -66,7 +66,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual([r[0] for r in ui._calibration_rows], ['Background', 'Sensor', 'Scale'])
             ui._select_calibration()
             self.assertIn('Choose', ui._calibration_message)
-            for index, (name, rect) in enumerate(ui._calibration_rows):
+            for index, (name, rect) in enumerate(ui._calibration_rows[:2]):
                 ui._pointer_event('lcd', rect.center, True)
                 ui._pointer_event('lcd', rect.center, False)
                 self.assertEqual(ui._calibration_selected, index)

@@ -15,8 +15,8 @@ Reboot with `sudo reboot` to apply.
 Next, enable SPI and I2C in `sudo raspi-config` and reboot if prompted. The runtime user
 needs access to the `spi`, `i2c`, and `gpio` groups.
 
-Finally, hook up the waveshare device according to instructions [here](https://www.waveshare.com/wiki/3.5inch_Capacitive_Touch_LCD)
-git commit -m "Added instructions to enable the power LED"
+Finally, hook up the waveshare device according to instructions [here](https://www.waveshare.com/wiki/3.5inch_Capacitive_Touch_LCD).
+
 # Install the software
 
 Fill out the dotenv:

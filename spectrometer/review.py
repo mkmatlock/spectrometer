@@ -28,7 +28,7 @@ def load_spectrum(path):
     return SpectrumFrame(bar, intensity.copy())
 
 
-def raw_bar(record):
+def raw_rgb(record):
     """Reconstruct the bar for older captures that saved only packed Bayer data."""
     import cv2
 
@@ -48,7 +48,31 @@ def raw_bar(record):
     bayer = np.empty((y1-y0, x1-x0), dtype=np.uint8)
     bayer[:, 0::2], bayer[:, 1::2] = triples[:, :, 0], triples[:, :, 1]
     rgb = cv2.cvtColor(bayer, getattr(cv2, 'COLOR_Bayer' + fmt[1:5] + '2RGB'))
-    return cv2.resize(rgb, BAR_SIZE, interpolation=cv2.INTER_AREA).tobytes()
+    return rgb
+
+
+def raw_bar(record):
+    import cv2
+    return cv2.resize(raw_rgb(record), BAR_SIZE, interpolation=cv2.INTER_AREA).tobytes()
+
+
+def load_channels(path):
+    """Build display-only channel views from the full ROI, never the tiny bar."""
+    import cv2
+    with Path(path).open('rb') as source:
+        record = pickle.load(source)
+    if tuple(record.get('spectrum_roi', SPECTRUM_ROI)) != SPECTRUM_ROI:
+        raise ValueError('Unsupported spectrum region')
+    rgb = raw_rgb(record)
+    preview = cv2.resize(rgb, BAR_SIZE, interpolation=cv2.INTER_AREA)
+    result = {}
+    for index, channel in enumerate(('Red', 'Green', 'Blue')):
+        totals = cv2.reduce(np.ascontiguousarray(rgb[:, :, index]), 0,
+                            cv2.REDUCE_SUM, dtype=cv2.CV_32S).reshape(-1)
+        bar = np.zeros_like(preview)
+        bar[:, :, index] = preview[:, :, index]
+        result[channel] = SpectrumFrame(bar.tobytes(), totals)
+    return result
 
 
 class ReviewList:
@@ -65,6 +89,10 @@ class ReviewList:
         self.future = None
         self.loaded_path = None
         self._loading_path = None
+        self.filter_future = None
+        self.filter_channel = "All"
+        self._wanted_channel = None
+        self._channel_cache = {}
 
     def refresh(self):
         self.message = ''
@@ -102,10 +130,45 @@ class ReviewList:
         try:
             result = future.result()
             self.loaded_path = self._loading_path
+            self._channel_cache = {'All': result}
+            self.filter_channel = 'All'
+            self.cancel_filter()
             self.message = ''
             return result
         except Exception as exc:
             self.message = 'Cannot load: ' + str(exc)
+            return None
+
+    def cancel_filter(self):
+        if self.filter_future is not None:
+            self.filter_future.cancel()
+            self.filter_future = None
+        self._wanted_channel = None
+
+    def request_filter(self, channel):
+        if channel not in ('Red', 'Green', 'Blue', 'All'):
+            raise ValueError('Unknown channel')
+        self._wanted_channel = channel
+        self.message = ''
+        if channel in self._channel_cache:
+            self.filter_channel = channel
+            return self._channel_cache[channel]
+        if self.filter_future is None:
+            self.filter_future = self._executor.submit(load_channels, self.loaded_path)
+        self.message = 'Loading channels...'
+        return None
+
+    def poll_filter(self):
+        if self.filter_future is None or not self.filter_future.done():
+            return None
+        future, self.filter_future = self.filter_future, None
+        try:
+            self._channel_cache.update(future.result())
+            self.message = ''
+            self.filter_channel = self._wanted_channel
+            return self._channel_cache[self.filter_channel]
+        except Exception as exc:
+            self.message = 'Cannot filter: ' + str(exc)
             return None
 
     def delete_loaded(self):

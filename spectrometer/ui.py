@@ -41,6 +41,7 @@ class SpectrometerUI:
         self._redraw = False
         self._list_start = None
         self._delete_dialog = False
+        self._filter_dialog = False
         self._calibration_dialog = False
         self._calibration_selected = None
         self._calibration_pressed = None
@@ -111,6 +112,7 @@ class SpectrometerUI:
         self._review_list()
 
     def _review_list(self):
+        self.review.cancel_filter()
         self.mode = "review"
         self.buttons = [("Display", pygame.Rect(8, 264, 228, 48), self.review.display),
                         ("Back", pygame.Rect(244, 264, 228, 48), self._exit_review)]
@@ -128,6 +130,13 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_review(self):
+        if self.mode == "saved" and self._filter_dialog:
+            loading = self.review.filter_future is not None
+            frame = self.review.poll_filter()
+            if frame is not None:
+                self._apply_filter(frame)
+            elif loading and self.review.filter_future is None:
+                self._redraw = True
         if self.mode != "review":
             return
         was_loading = self.review.future is not None
@@ -143,9 +152,37 @@ class SpectrometerUI:
             self._camera_bar = pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB").copy()
             self.mode = "saved"
             self._saved_buttons = [
-                ("Delete", pygame.Rect(8, 264, 228, 48), self._ask_delete),
-                ("Back", pygame.Rect(244, 264, 228, 48), self._review_list)]
+                ("Delete", pygame.Rect(8, 264, 149, 48), self._ask_delete),
+                ("Filter", pygame.Rect(165, 264, 150, 48), self._ask_filter),
+                ("Back", pygame.Rect(323, 264, 149, 48), self._review_list)]
             self.buttons = self._saved_buttons
+
+    def _ask_filter(self):
+        self._filter_dialog = True
+        self.review.message = ""
+        self.buttons = [(name, pygame.Rect(64, 66 + i * 38, 352, 34),
+                         lambda channel=name: self._choose_filter(channel))
+                        for i, name in enumerate(("Red", "Green", "Blue", "All"))]
+        self.buttons.append(("Back", pygame.Rect(64, 224, 352, 48), self._back_filter))
+        self._redraw = True
+
+    def _choose_filter(self, channel):
+        frame = self.review.request_filter(channel)
+        if frame is not None:
+            self._apply_filter(frame)
+        self._redraw = True
+
+    def _apply_filter(self, frame):
+        from .camera import BAR_SIZE
+        self._plot.update(frame.intensity)
+        self._camera_bar = pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB").copy()
+        self._back_filter()
+
+    def _back_filter(self):
+        self.review.cancel_filter()
+        self._filter_dialog = False
+        self.buttons = self._saved_buttons
+        self._redraw = True
 
     def _ask_delete(self):
         self._delete_dialog = True
@@ -282,6 +319,19 @@ class SpectrometerUI:
             surface.blit(text, text.get_rect(center=(240, 142)))
         if self._calibration_dialog:
             self._draw_calibration_dialog(surface, font)
+        if self._filter_dialog:
+            for label, rect, _ in self._saved_buttons:
+                pygame.draw.rect(surface, BUTTON, rect, border_radius=6)
+                text = font.render(label, True, TEXT)
+                surface.blit(text, text.get_rect(center=rect.center))
+            shade = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+            shade.fill((0, 0, 0, 160))
+            surface.blit(shade, (0, 0))
+            pygame.draw.rect(surface, PANEL, (48, 28, 384, 260), border_radius=8)
+            small = pygame.font.Font(None, 19)
+            title = self.review.message or "Channel filter: " + self.review.filter_channel
+            text = small.render(title[:52], True, TEXT)
+            surface.blit(text, text.get_rect(center=(240, 46)))
         for i, (label, rect, _) in enumerate(self.buttons):
             if not surface.get_clip().colliderect(rect):
                 continue
@@ -457,7 +507,8 @@ class SpectrometerUI:
             while True:
                 # Block while idle instead of continuously repainting the SPI LCD.
                 event = pygame.event.wait(20) if (self.camera is not None or self.review.future is not None
-                                                or self.settings_view.future is not None) else pygame.event.wait()
+                                                or self.settings_view.future is not None
+                                                or self.review.filter_future is not None) else pygame.event.wait()
                 if event.type == pygame.QUIT or (
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
                 ):

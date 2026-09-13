@@ -192,6 +192,7 @@ class CameraStream:
                 # recycles it. Never retain the mapped camera buffer in a worker.
                 "raw_camera_output": request.make_array("raw"),
                 "spectrum_intensity": frame.intensity.copy(),
+                "spectrum_bar": frame.bar,
                 "spectrum_roi": SPECTRUM_ROI,
             }
             self._writer.submit(self._save_capture, record)

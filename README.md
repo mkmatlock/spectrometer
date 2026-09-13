@@ -1,16 +1,22 @@
 # Raspberry pi configuration
 
-First, disable the activity light to eliminate a source of stray light.
+First, we need to disable the activity light to eliminate a source of stray light and add an overlay to use the external LED as a power indicator.
 
-```vi /boot/firmware/config.txt
+Edit `/boot/firmware/config.txt`, find the `[all]` section heading and add:
+
+```ini
+[all]
 dtparam=act_led_trigger=none
+dtoverlay=gpio-led,gpio=26,label=power,trigger=default-on
 ```
 
-Enable SPI and I2C in `sudo raspi-config` and reboot if prompted. The runtime user
-needs access to the `spi`, `i2c`, and `gpio` groups. 
+Reboot with `sudo reboot` to apply.
 
-Finally, hook up the waveshare device according to instructions at 
+Next, enable SPI and I2C in `sudo raspi-config` and reboot if prompted. The runtime user
+needs access to the `spi`, `i2c`, and `gpio` groups.
 
+Finally, hook up the waveshare device according to instructions [here](https://www.waveshare.com/wiki/3.5inch_Capacitive_Touch_LCD)
+git commit -m "Added instructions to enable the power LED"
 # Install the software
 
 Fill out the dotenv:

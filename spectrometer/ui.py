@@ -28,6 +28,9 @@ class SpectrometerUI:
         self.fullscreen = fullscreen
         self.camera = camera
         self._camera_bar = None
+        from .plot import SpectrumPlot
+
+        self._plot = SpectrumPlot()
         self.spectrum_rect = pygame.Rect(8, 8, 464, 200)
         self.camera_slice_rect = pygame.Rect(8, 216, 464, 40)
         self.buttons = [
@@ -76,10 +79,13 @@ class SpectrometerUI:
                     LOGGER.info("%s is not implemented yet", label)
 
     def draw(self, surface, font):
-        """Draw the live camera slice below the spectrum plot placeholder."""
+        """Draw cached spectrum axes, trace, camera slice, and touch controls."""
         surface.fill(BACKGROUND)
-        for rect, label in ((self.spectrum_rect, "Spectrum — placeholder"),
-                            (self.camera_slice_rect, "Raw camera slice — placeholder")):
+        if surface.get_clip().colliderect(self.spectrum_rect):
+            self._plot.draw(surface, self.spectrum_rect.topleft)
+        for rect, label in ((self.camera_slice_rect, "Raw camera slice — placeholder"),):
+            if not surface.get_clip().colliderect(rect):
+                continue
             pygame.draw.rect(surface, PANEL, rect, border_radius=4)
             pygame.draw.rect(surface, BORDER, rect, width=1, border_radius=4)
             text = font.render(label, True, MUTED)
@@ -87,6 +93,8 @@ class SpectrometerUI:
         if self._camera_bar is not None:
             surface.blit(self._camera_bar, self.camera_slice_rect.move(1, 1))
         for i, (label, rect, _) in enumerate(self.buttons):
+            if not surface.get_clip().colliderect(rect):
+                continue
             color = PRESSED if self._pressed == i else BUTTON
             pygame.draw.rect(surface, color, rect, border_radius=6)
             text = font.render(label, True, TEXT)
@@ -105,12 +113,13 @@ class SpectrometerUI:
     def _poll_camera(self):
         if self.camera is None:
             return False
-        bar = self.camera.poll()
-        if bar is None:
+        frame = self.camera.poll()
+        if frame is None:
             return False
         from .camera import BAR_SIZE
 
-        self._camera_bar = pygame.image.frombuffer(bar, BAR_SIZE, "RGB").copy()
+        self._camera_bar = pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB").copy()
+        self._plot.update(frame.intensity)
         return True
 
     def _run_lcd(self):
@@ -151,6 +160,7 @@ class SpectrometerUI:
                                     if index is not None:
                                         regions.append(self.buttons[index][1])
                             if new_frame:
+                                regions.append(self._plot.AREA.move(self.spectrum_rect.topleft))
                                 regions.append(self.camera_slice_rect.inflate(-2, -2))
                             # Clip drawing and transfer only changed pixels.
                             for rect in regions:

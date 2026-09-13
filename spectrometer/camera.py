@@ -39,12 +39,29 @@ def spectrum_bar(frame):
     return cv2.cvtColor(preview, cv2.COLOR_BGR2RGB).tobytes()
 
 
+@dataclass(frozen=True)
+class SpectrumFrame:
+    bar: bytes
+    intensity: object  # Owned int32 array, one total per sensor column.
+
+
+def process_frame(frame):
+    """Sum grayscale intensity vertically in the original, unscaled ROI."""
+    import cv2
+
+    bar = spectrum_bar(frame)
+    x0, y0, x1, y1 = SPECTRUM_ROI
+    gray = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    totals = cv2.reduce(gray, 0, cv2.REDUCE_SUM, dtype=cv2.CV_32S).reshape(-1)
+    return SpectrumFrame(bar, totals)
+
+
 class CameraStream:
-    """Publish only the newest bar; acquisition never waits for the LCD.
+    """Publish the newest bar and spectrum; acquisition never waits for the LCD.
 
     Picamera2 owns the libcamera event thread. Its callback maps the full-size
     buffer without copying it; OpenCV processes only the ROI. The UI polls a
-    single small RGB buffer, avoiding a queue of stale 12-megapixel frames.
+    single bar/spectrum pair, avoiding a queue of stale 12-megapixel frames.
     """
 
     def __init__(self, settings=None):
@@ -121,14 +138,14 @@ class CameraStream:
         started = time.monotonic()
         try:
             with MappedArray(request, "main", write=False) as mapped:
-                bar = spectrum_bar(mapped.array)
+                frame = process_frame(mapped.array)
             if not self._logged_frame:
                 metadata = request.get_metadata()
                 LOGGER.info("Camera first frame: duration=%s us, exposure=%s us",
                             metadata.get("FrameDuration"), metadata.get("ExposureTime"))
                 self._logged_frame = True
             with self._lock:
-                self._latest = bar
+                self._latest = frame
             LOGGER.debug("Camera ROI processing %.1f ms", (time.monotonic() - started) * 1000)
         except Exception as exc:
             # Surface callback failures to the UI instead of killing libcamera's
@@ -137,7 +154,7 @@ class CameraStream:
                 self._error = exc
 
     def poll(self):
-        """Return the newest RGB bar once, or None when no new frame is ready."""
+        """Return the newest bar and spectrum together, once per frame."""
         with self._lock:
             if self._error is not None:
                 raise RuntimeError("Camera frame processing failed") from self._error

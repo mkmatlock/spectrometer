@@ -1,0 +1,14 @@
+[Unit]
+Description=Spectrometer user interface
+After=multi-user.target
+
+[Service]
+Type=idle
+User=spectrometer
+SupplementaryGroups=spi i2c gpio
+WorkingDirectory=/home/spectrometer
+ExecStart=/usr/bin/python3 -m spectrometer
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

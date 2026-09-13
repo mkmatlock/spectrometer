@@ -5,7 +5,7 @@ After=local-fs.target
 [Service]
 Type=idle
 User=spectrometer
-SupplementaryGroups=spi i2c gpio
+SupplementaryGroups=spi i2c gpio video render
 WorkingDirectory=/home/spectrometer
 ExecStart=/usr/bin/python3 -m spectrometer
 Restart=always

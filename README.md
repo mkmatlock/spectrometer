@@ -41,7 +41,20 @@ service or framebuffer driver that owns the same SPI device or GPIO pins.
 
 
 Rendering uses Pygame software surfaces and Pillow to pass RGB images to the
-LCD driver's RGB565 conversion. No camera access or acquisition is started.
+LCD driver's RGB565 conversion. Camera acquisition starts by default. Use Raspberry
+Pi OS Bookworm or later and install the updated dependencies with `setup.sh`.
+Stop any separate camera server before starting this app; only one process can
+own the camera.
+
+```sh
+python3 -m spectrometer --fps 30 --exposure-us 20000
+```
+
+Omit `--exposure-us` for automatic exposure. Full-resolution IMX477 capture is
+limited to about 10 fps; the requested rate is capped to the sensor mode's limit.
+Longer exposures can reduce it further. Startup logs report the configured frame
+period and first-frame exposure. Use `--no-camera` for touch-only diagnostics or
+`--windowed --no-camera` for a desktop preview without Pi hardware.
 
 
 ## Touch diagnostics

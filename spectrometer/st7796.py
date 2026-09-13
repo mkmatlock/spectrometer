@@ -234,47 +234,41 @@ class st7796():
             Addr = ((Xstart) + (i * 240)) * 2        
             self.spi_writebyte(pix[Addr : Addr+((Xend-Xstart+1)*2)])
 
-    def show_image(self, Image):
-        """Set buffer to value of Python Imaging Library image."""
-        """Write display buffer to physical display"""
-        imwidth, imheight = Image.size
-        if (imwidth, imheight) not in ((self.width, self.height),
-                                      (self.height, self.width)):
-            raise ValueError("Image must match the portrait or landscape display size")
-        Image = Image.convert("RGB")
-        if imwidth == self.height and imheight ==  self.width:
-            # print("Landscape screen")
-            # This panel mirrors landscape columns with the vendor's 0x78
-            # setup. Reverse columns explicitly, without changing scan timing
-            # or the vertical orientation along with the MADCTL mirror bits.
-            img = self.np.asarray(Image)[:, ::-1, :]
-            pix = self.np.zeros((self.width, self.height,2), dtype = self.np.uint8)
-            #RGB888 >> RGB565
-            pix[...,[0]] = self.np.add(self.np.bitwise_and(img[...,[0]],0xF8),self.np.right_shift(img[...,[1]],5))
-            pix[...,[1]] = self.np.add(self.np.bitwise_and(self.np.left_shift(img[...,[1]],3),0xE0), self.np.right_shift(img[...,[2]],3))
-            pix = pix.flatten().tolist()
-            
-            self.command(0x36)
-            self.data(0x78)
-            self.set_windows(0, 0, self.height - 1, self.width - 1, 1)
-            self.digital_write(self.GPIO_DC_PIN,True)
-        else :
-            # print("Portrait screen")
-            img = self.np.asarray(Image)
-            pix = self.np.zeros((imheight,imwidth , 2), dtype = self.np.uint8)
-            
-            pix[...,[0]] = self.np.add(self.np.bitwise_and(img[...,[0]],0xF8),self.np.right_shift(img[...,[1]],5))
-            pix[...,[1]] = self.np.add(self.np.bitwise_and(self.np.left_shift(img[...,[1]],3),0xE0), self.np.right_shift(img[...,[2]],3))
-            pix = pix.flatten().tolist()
-            
-            self.command(0x36)
-            self.data(0x08)
-            self.set_windows(0, 0, self.width - 1, self.height - 1, 0)
-            self.digital_write(self.GPIO_DC_PIN,True)
-        for i in range(0, len(pix), 4096):
-            self.spi_writebyte(pix[i: i+4096])
+    def _write_pixels(self, image, mirror=False):
+        """Pack RGB565 without building a Python integer list for each frame."""
+        rgb = self.np.asarray(image.convert("RGB"))
+        if mirror:
+            rgb = rgb[:, ::-1]
+        packed = self.np.empty((*rgb.shape[:2], 2), dtype=self.np.uint8)
+        packed[..., 0] = (rgb[..., 0] & 0xf8) | (rgb[..., 1] >> 5)
+        packed[..., 1] = ((rgb[..., 1] << 3) & 0xe0) | (rgb[..., 2] >> 3)
+        self.digital_write(self.GPIO_DC_PIN, True)
+        # writebytes2 accepts a buffer and splits it according to spidev's
+        # transfer limit, avoiding Python lists and per-chunk Python calls.
+        self.SPI.writebytes2(packed.tobytes())
 
-    
+    def show_image(self, Image):
+        size = Image.size
+        if size not in ((self.width, self.height), (self.height, self.width)):
+            raise ValueError("Image must match the portrait or landscape display size")
+        landscape = size == (self.height, self.width)
+        self.command(0x36)
+        self.data(0x78 if landscape else 0x08)
+        self.set_windows(0, 0, size[0] - 1, size[1] - 1, int(landscape))
+        self._write_pixels(Image, mirror=landscape)
+
+    def show_region(self, x, y, image):
+        """Write a landscape patch in logical (unmirrored UI) coordinates."""
+        width, height = image.size
+        if width <= 0 or height <= 0 or x < 0 or y < 0 or x + width > self.height or y + height > self.width:
+            raise ValueError("Region is outside the landscape display")
+        self.command(0x36)
+        self.data(0x78)
+        # Reflect both the patch position and its columns, just like a full frame.
+        self.set_windows(self.height - x - width, y,
+                         self.height - x - 1, y + height - 1, 1)
+        self._write_pixels(image, mirror=True)
+
     def clear(self):
         """Clear contents of image buffer"""
         _buffer = [0xff] * (self.width*self.height*2)

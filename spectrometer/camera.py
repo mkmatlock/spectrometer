@@ -1,0 +1,158 @@
+"""Full-resolution IMX477 acquisition with an OpenCV spectrum-bar preview."""
+
+from dataclasses import dataclass
+import logging
+import math
+import threading
+import time
+
+
+LOGGER = logging.getLogger(__name__)
+SENSOR_SIZE = (4056, 3040)
+SPECTRUM_ROI = (0, 1550, 3500, 1800)  # x0, y0, x1, y1 (exclusive)
+BAR_SIZE = (462, 38)  # Inside the UI's one-pixel border.
+PACKED_12_FORMATS = {"S%s12_CSI2P" % order for order in
+                     ("RGGB", "GRBG", "GBRG", "BGGR")}
+
+
+@dataclass(frozen=True)
+class CameraSettings:
+    frame_rate: float = 5.0
+    exposure_us: int = None  # None keeps automatic exposure enabled.
+
+    def __post_init__(self):
+        if not math.isfinite(self.frame_rate) or self.frame_rate <= 0:
+            raise ValueError("Frame rate must be positive and finite")
+        if self.exposure_us is not None and self.exposure_us <= 0:
+            raise ValueError("Exposure must be a positive number of microseconds")
+
+
+def spectrum_bar(frame):
+    """Crop full-resolution BGR pixels before resizing and converting to RGB."""
+    import cv2
+
+    if frame.shape != (SENSOR_SIZE[1], SENSOR_SIZE[0], 3):
+        raise ValueError("Expected a 4056x3040 three-channel camera frame")
+    x0, y0, x1, y1 = SPECTRUM_ROI
+    crop = frame[y0:y1, x0:x1]
+    preview = cv2.resize(crop, BAR_SIZE, interpolation=cv2.INTER_AREA)
+    return cv2.cvtColor(preview, cv2.COLOR_BGR2RGB).tobytes()
+
+
+class CameraStream:
+    """Publish only the newest bar; acquisition never waits for the LCD.
+
+    Picamera2 owns the libcamera event thread. Its callback maps the full-size
+    buffer without copying it; OpenCV processes only the ROI. The UI polls a
+    single small RGB buffer, avoiding a queue of stale 12-megapixel frames.
+    """
+
+    def __init__(self, settings=None):
+        self.settings = settings or CameraSettings()
+        self._lock = threading.Lock()
+        self._latest = None
+        self._error = None
+        self._camera = None
+        self._started = False
+        self._logged_frame = False
+
+    def __enter__(self):
+        started = time.monotonic()
+        from picamera2 import Picamera2
+        import cv2
+
+        cv2.setNumThreads(1)
+
+        self._camera = Picamera2()
+        try:
+            config = self._camera.create_video_configuration(
+                main={"size": SENSOR_SIZE, "format": "RGB888"},  # BGR in memory
+                raw={"size": SENSOR_SIZE, "format": "SRGGB12_CSI2P"},
+                sensor={"output_size": SENSOR_SIZE, "bit_depth": 12},
+                buffer_count=2, queue=False)
+            self._camera.configure(config)
+            # Query timing only after configuring the exact mode; sensor_modes
+            # probes/reconfigures every mode and is expensive on the Pi Zero.
+            minimum, maximum, _ = self._camera.camera_controls["FrameDurationLimits"]
+            requested = math.ceil(1_000_000 / self.settings.frame_rate)
+            duration = max(minimum, requested, self.settings.exposure_us or 0)
+            if requested < minimum:
+                LOGGER.warning("Requested %.2f fps; configured sensor mode permits %.2f fps",
+                               self.settings.frame_rate, 1_000_000 / minimum)
+            controls = {"FrameDurationLimits": (duration, duration),
+                        "AeEnable": self.settings.exposure_us is None}
+            if self.settings.exposure_us is not None:
+                controls["ExposureTime"] = self.settings.exposure_us
+            # Reject unsupported timing rather than silently letting libcamera
+            # clamp a user-specified exposure or very low frame rate.
+            for name, value in (("FrameDurationLimits", duration),
+                                ("ExposureTime", self.settings.exposure_us)):
+                if value is not None:
+                    low, high, _ = self._camera.camera_controls[name]
+                    if not low <= value <= high:
+                        raise ValueError("%s must be between %s and %s us" % (name, low, high))
+            actual = self._camera.camera_configuration()
+            raw = actual.get("raw") or {}
+            raw_size = tuple(raw.get("size", ()))
+            raw_format = str(raw.get("format", ""))
+            # libcamera may adjust Bayer order. That does not change resolution,
+            # bit depth, or packing, and the ISP handles colour conversion for
+            # the processed main stream used by our preview.
+            if raw_size != SENSOR_SIZE or raw_format not in PACKED_12_FORMATS:
+                raise RuntimeError(
+                    "Camera did not configure packed 4056:3040:12:P mode; "
+                    "actual raw size=%r format=%r" % (raw_size, raw_format))
+            LOGGER.info("Configured raw stream: size=%s format=%s", raw_size, raw_format)
+            self._camera.set_controls(controls)
+            self._camera.post_callback = self._on_frame
+            self._camera.start(show_preview=False)
+            self._started = True
+            LOGGER.info("Camera startup completed in %.2f s", time.monotonic() - started)
+            LOGGER.info("Camera mode 4056:3040:12:P; target %.2f fps; exposure %s",
+                        1_000_000 / duration, self.settings.exposure_us or "automatic")
+        except BaseException:
+            self.close()
+            raise
+        return self
+
+    def _on_frame(self, request):
+        from picamera2 import MappedArray
+
+        started = time.monotonic()
+        try:
+            with MappedArray(request, "main", write=False) as mapped:
+                bar = spectrum_bar(mapped.array)
+            if not self._logged_frame:
+                metadata = request.get_metadata()
+                LOGGER.info("Camera first frame: duration=%s us, exposure=%s us",
+                            metadata.get("FrameDuration"), metadata.get("ExposureTime"))
+                self._logged_frame = True
+            with self._lock:
+                self._latest = bar
+            LOGGER.debug("Camera ROI processing %.1f ms", (time.monotonic() - started) * 1000)
+        except Exception as exc:
+            # Surface callback failures to the UI instead of killing libcamera's
+            # event thread and leaving an apparently healthy, frozen preview.
+            with self._lock:
+                self._error = exc
+
+    def poll(self):
+        """Return the newest RGB bar once, or None when no new frame is ready."""
+        with self._lock:
+            if self._error is not None:
+                raise RuntimeError("Camera frame processing failed") from self._error
+            result, self._latest = self._latest, None
+            return result
+
+    def close(self):
+        if self._camera is not None:
+            try:
+                if self._started:
+                    self._camera.stop()
+            finally:
+                self._camera.close()
+                self._camera = None
+                self._started = False
+
+    def __exit__(self, *exc):
+        self.close()

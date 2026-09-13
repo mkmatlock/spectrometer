@@ -102,6 +102,22 @@ class LCDUITests(unittest.TestCase):
         callback.assert_not_called()
         self.assertIsNone(ui._pressed)
 
+    def test_camera_refresh_transfers_only_bar(self):
+        ui = SpectrometerUI()
+        hardware = Mock()
+        hardware.read_touch.return_value = None
+        stopping = Mock()
+        stopping.is_set.side_effect = [False, True]
+        with patch("spectrometer.hardware.LCDBackend") as factory, \
+                patch("spectrometer.ui.threading.Event", return_value=stopping), \
+                patch.object(ui, "_poll_camera", return_value=True):
+            factory.return_value.__enter__.return_value = hardware
+            ui.run()
+        self.assertEqual(hardware.present.call_count, 2)
+        regions = hardware.present.call_args.args[1]
+        self.assertEqual(regions, [pygame.Rect(60, 36, 400, 130),
+                                   pygame.Rect(9, 217, 462, 38)])
+
 
 if __name__ == "__main__":
     unittest.main()

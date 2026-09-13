@@ -1,4 +1,4 @@
-"""Small, software-rendered UI shell. Camera and spectrum processing come later."""
+"""Software-rendered touchscreen UI with a live camera spectrum bar."""
 
 import logging
 import threading
@@ -24,8 +24,10 @@ class SpectrometerUI:
     """
 
     def __init__(self, *, fullscreen=True, on_capture=None, on_review=None,
-                 on_settings=None):
+                 on_settings=None, camera=None):
         self.fullscreen = fullscreen
+        self.camera = camera
+        self._camera_bar = None
         self.spectrum_rect = pygame.Rect(8, 8, 464, 200)
         self.camera_slice_rect = pygame.Rect(8, 216, 464, 40)
         self.buttons = [
@@ -74,7 +76,7 @@ class SpectrometerUI:
                     LOGGER.info("%s is not implemented yet", label)
 
     def draw(self, surface, font):
-        """Draw placeholders only; no camera data or spectrum widgets yet."""
+        """Draw the live camera slice below the spectrum plot placeholder."""
         surface.fill(BACKGROUND)
         for rect, label in ((self.spectrum_rect, "Spectrum — placeholder"),
                             (self.camera_slice_rect, "Raw camera slice — placeholder")):
@@ -82,6 +84,8 @@ class SpectrometerUI:
             pygame.draw.rect(surface, BORDER, rect, width=1, border_radius=4)
             text = font.render(label, True, MUTED)
             surface.blit(text, text.get_rect(center=rect.center))
+        if self._camera_bar is not None:
+            surface.blit(self._camera_bar, self.camera_slice_rect.move(1, 1))
         for i, (label, rect, _) in enumerate(self.buttons):
             color = PRESSED if self._pressed == i else BUTTON
             pygame.draw.rect(surface, color, rect, border_radius=6)
@@ -90,10 +94,24 @@ class SpectrometerUI:
 
     def run(self):
         """Use the directly connected LCD unless a desktop preview is requested."""
-        if self.fullscreen:
-            self._run_lcd()
-        else:
-            self._run_desktop()
+        from contextlib import nullcontext
+
+        with (self.camera if self.camera is not None else nullcontext()):
+            if self.fullscreen:
+                self._run_lcd()
+            else:
+                self._run_desktop()
+
+    def _poll_camera(self):
+        if self.camera is None:
+            return False
+        bar = self.camera.poll()
+        if bar is None:
+            return False
+        from .camera import BAR_SIZE
+
+        self._camera_bar = pygame.image.frombuffer(bar, BAR_SIZE, "RGB").copy()
+        return True
 
     def _run_lcd(self):
         from contextlib import ExitStack
@@ -125,9 +143,21 @@ class SpectrometerUI:
                         elif last_position is not None:
                             self._pointer_event("lcd", last_position, False)
                             last_position = None
-                        if previous != self._pressed:
-                            self.draw(surface, font)
-                            hardware.present(surface)
+                        new_frame = self._poll_camera()
+                        if previous != self._pressed or new_frame:
+                            regions = []
+                            if previous != self._pressed:
+                                for index in (previous, self._pressed):
+                                    if index is not None:
+                                        regions.append(self.buttons[index][1])
+                            if new_frame:
+                                regions.append(self.camera_slice_rect.inflate(-2, -2))
+                            # Clip drawing and transfer only changed pixels.
+                            for rect in regions:
+                                surface.set_clip(rect)
+                                self.draw(surface, font)
+                            surface.set_clip(None)
+                            hardware.present(surface, regions)
                         stopping.wait(0.02)
         finally:
             self._pointer = self._pressed = None
@@ -147,7 +177,7 @@ class SpectrometerUI:
             pygame.display.flip()
             while True:
                 # Block while idle instead of continuously repainting the SPI LCD.
-                event = pygame.event.wait()
+                event = pygame.event.wait(20) if self.camera is not None else pygame.event.wait()
                 if event.type == pygame.QUIT or (
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
                 ):
@@ -156,7 +186,8 @@ class SpectrometerUI:
                 self._handle_pointer(event)
                 if event.type == pygame.WINDOWFOCUSLOST:
                     self._pointer = self._pressed = None
-                if previous != self._pressed or event.type in (
+                new_frame = self._poll_camera()
+                if new_frame or previous != self._pressed or event.type in (
                     pygame.WINDOWEXPOSED, pygame.WINDOWSHOWN
                 ):
                     self.draw(surface, font)

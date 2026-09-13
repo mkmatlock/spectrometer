@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack
 import logging
+import time
 
 
 LOGGER = logging.getLogger(__name__)
@@ -31,13 +32,24 @@ class LCDBackend:
     def __exit__(self, *exc):
         return self._resources.__exit__(*exc)
 
-    def present(self, surface):
+    def present(self, surface, regions=None):
         import pygame
         from PIL import Image
 
-        image = Image.frombytes("RGB", surface.get_size(),
-                                pygame.image.tostring(surface, "RGB"))
-        self.display.show_image(image)
+        started = time.monotonic()
+        patches = [surface.get_rect()] if regions is None else regions
+        pixels = 0
+        for rect in patches:
+            patch = surface.subsurface(rect)
+            image = Image.frombytes("RGB", patch.get_size(),
+                                    pygame.image.tostring(patch, "RGB"))
+            if regions is None:
+                self.display.show_image(image)
+            else:
+                self.display.show_region(rect.x, rect.y, image)
+            pixels += rect.width * rect.height
+        LOGGER.debug("LCD transfer %s pixels in %.1f ms", pixels,
+                     (time.monotonic() - started) * 1000)
 
     def read_touch(self):
         self.touch.read_touch_data()

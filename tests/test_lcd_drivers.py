@@ -29,7 +29,7 @@ class DriverTests(unittest.TestCase):
                 lcd.set_windows = Mock()
                 lcd.digital_write = Mock()
                 lcd.GPIO_DC_PIN = Mock()
-                lcd.spi_writebyte = Mock()
+                lcd.SPI = Mock()
                 image = Image.new("RGB", size, "red")
                 # Asymmetric corner markers detect a reflection or rotation.
                 image.putpixel((0, 0), (0, 255, 0))
@@ -37,10 +37,10 @@ class DriverTests(unittest.TestCase):
                 lcd.show_image(image)
                 lcd.set_windows.assert_called_once_with(
                     0, 0, size[0] - 1, size[1] - 1, int(size[0] == 480))
-                chunks = [call.args[0] for call in lcd.spi_writebyte.call_args_list]
-                self.assertEqual(sum(map(len, chunks)), 480 * 320 * 2)
-                self.assertTrue(all(len(chunk) <= 4096 for chunk in chunks))
-                data = bytes(value for chunk in chunks for value in chunk)
+                lcd.SPI.writebytes2.assert_called_once()
+                data = lcd.SPI.writebytes2.call_args.args[0]
+                self.assertIsInstance(data, bytes)
+                self.assertEqual(len(data), 480 * 320 * 2)
                 left = b'\x00\x1f' if size[0] == 480 else b'\x07\xe0'
                 right = b'\x07\xe0' if size[0] == 480 else b'\x00\x1f'
                 self.assertEqual(data[:2], left)
@@ -63,6 +63,19 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(touch.get_touch_xy(), (0, []))
         self.assertEqual(touch.read_bytes.call_count, 3)
         touch.read_bytes.assert_called_with(0x02, 13)
+
+    def test_landscape_region_position_and_pixel_order(self):
+        lcd = self.lcd_class.__new__(self.lcd_class)
+        lcd.width, lcd.height, lcd.np = 320, 480, numpy
+        lcd.command, lcd.data, lcd.set_windows = Mock(), Mock(), Mock()
+        lcd.digital_write, lcd.GPIO_DC_PIN, lcd.SPI = Mock(), Mock(), Mock()
+        patch = Image.new("RGB", (2, 1), "red")
+        patch.putpixel((1, 0), (0, 0, 255))
+        lcd.show_region(10, 217, patch)
+        lcd.set_windows.assert_called_once_with(468, 217, 469, 217, 1)
+        lcd.SPI.writebytes2.assert_called_once_with(b'\x00\x1f\xf8\x00')
+        with self.assertRaises(ValueError):
+            lcd.show_region(479, 0, patch)
 
     def test_touch_event_flags_and_short_read(self):
         touch = self.touch_class.__new__(self.touch_class)

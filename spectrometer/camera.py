@@ -5,6 +5,9 @@ import logging
 import math
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
 
 
 LOGGER = logging.getLogger(__name__)
@@ -64,7 +67,7 @@ class CameraStream:
     single bar/spectrum pair, avoiding a queue of stale 12-megapixel frames.
     """
 
-    def __init__(self, settings=None):
+    def __init__(self, settings=None, capture_directory=None):
         self.settings = settings or CameraSettings()
         self._lock = threading.Lock()
         self._latest = None
@@ -72,6 +75,10 @@ class CameraStream:
         self._camera = None
         self._started = False
         self._logged_frame = False
+        self._capture_directory = Path.home() if capture_directory is None else Path(capture_directory)
+        self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spectrum-save")
+        self._capture_pending = False
+        self._capture_busy = False
 
     def __enter__(self):
         started = time.monotonic()
@@ -120,6 +127,7 @@ class CameraStream:
                     "Camera did not configure packed 4056:3040:12:P mode; "
                     "actual raw size=%r format=%r" % (raw_size, raw_format))
             LOGGER.info("Configured raw stream: size=%s format=%s", raw_size, raw_format)
+            self._raw_config = dict(raw)
             self._camera.set_controls(controls)
             self._camera.post_callback = self._on_frame
             self._camera.start(show_preview=False)
@@ -136,6 +144,10 @@ class CameraStream:
         from picamera2 import MappedArray
 
         started = time.monotonic()
+        timestamp = datetime.now().astimezone()
+        with self._lock:
+            capture = self._capture_pending
+            self._capture_pending = False
         try:
             with MappedArray(request, "main", write=False) as mapped:
                 frame = process_frame(mapped.array)
@@ -146,12 +158,57 @@ class CameraStream:
                 self._logged_frame = True
             with self._lock:
                 self._latest = frame
+            if capture:
+                self._queue_capture(request, frame, timestamp)
             LOGGER.debug("Camera ROI processing %.1f ms", (time.monotonic() - started) * 1000)
         except Exception as exc:
             # Surface callback failures to the UI instead of killing libcamera's
             # event thread and leaving an apparently healthy, frozen preview.
             with self._lock:
                 self._error = exc
+                if capture:
+                    self._capture_busy = False
+
+    def request_capture(self):
+        """Save the next frame; allow only one capture in flight on the Pi Zero."""
+        with self._lock:
+            if not self._started or self._capture_busy:
+                LOGGER.info("Capture unavailable: camera stopped or a capture is still saving")
+                return False
+            self._capture_pending = self._capture_busy = True
+        LOGGER.info("Capture requested")
+        return True
+
+    def _queue_capture(self, request, frame, timestamp):
+        try:
+            metadata = request.get_metadata()
+            record = {
+                "timestamp": timestamp,
+                "instrument_settings": {"exposure_time_us": metadata["ExposureTime"]},
+                # make_array copies the packed sensor buffer before libcamera
+                # recycles it. Never retain the mapped camera buffer in a worker.
+                "raw_camera_output": request.make_array("raw"),
+                "raw_camera_format": self._raw_config.copy(),
+                "spectrum_intensity": frame.intensity.copy(),
+                "spectrum_roi": SPECTRUM_ROI,
+            }
+            self._writer.submit(self._save_capture, record)
+        except Exception:
+            LOGGER.exception("Could not prepare spectrum capture")
+            with self._lock:
+                self._capture_busy = False
+
+    def _save_capture(self, record):
+        from .capture import save_capture
+
+        try:
+            path = save_capture(record, self._capture_directory)
+            LOGGER.info("Saved spectrum to %s", path)
+        except Exception:
+            LOGGER.exception("Could not save spectrum capture")
+        finally:
+            with self._lock:
+                self._capture_busy = False
 
     def poll(self):
         """Return the newest bar and spectrum together, once per frame."""
@@ -162,6 +219,15 @@ class CameraStream:
             return result
 
     def close(self):
+        try:
+            self._close_camera()
+        finally:
+            # Camera callbacks have finished before waiting for the disk writer.
+            self._writer.shutdown(wait=True)
+            with self._lock:
+                self._capture_pending = self._capture_busy = False
+
+    def _close_camera(self):
         if self._camera is not None:
             try:
                 if self._started:

@@ -31,6 +31,8 @@ class SpectrometerUI:
         from .plot import SpectrumPlot
 
         self._plot = SpectrumPlot()
+        if on_capture is None and camera is not None:
+            on_capture = camera.request_capture
         self.spectrum_rect = pygame.Rect(8, 8, 464, 200)
         self.camera_slice_rect = pygame.Rect(8, 216, 464, 40)
         self.buttons = [

@@ -80,6 +80,7 @@ class LCDUITests(unittest.TestCase):
         callback = Mock()
         ui = SpectrometerUI(on_capture=callback)
         hardware = Mock()
+        hardware.power_pressed.return_value = False
         hardware.read_touch.side_effect = [(80, 280), (80, 280), None, None]
         stopping = Mock()
         stopping.is_set.side_effect = [False, False, False, False, True]
@@ -105,6 +106,7 @@ class LCDUITests(unittest.TestCase):
     def test_camera_refresh_transfers_only_bar(self):
         ui = SpectrometerUI()
         hardware = Mock()
+        hardware.power_pressed.return_value = False
         hardware.read_touch.return_value = None
         stopping = Mock()
         stopping.is_set.side_effect = [False, True]

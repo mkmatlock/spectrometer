@@ -229,6 +229,28 @@ class CameraStream:
             with self._lock:
                 self._capture_pending = self._capture_busy = False
 
+    def pause(self):
+        """Stop acquisition; allow an already queued disk write to finish."""
+        with self._lock:
+            if not self._started:
+                return
+            self._started = False
+            if self._capture_pending:
+                self._capture_pending = self._capture_busy = False
+                LOGGER.info("Pending capture cancelled while pausing")
+        # Do not hold the lock while stop waits for camera callbacks.
+        self._camera.stop()
+        with self._lock:
+            self._latest = None
+        LOGGER.info("Camera paused")
+
+    def resume(self):
+        """Restart the existing configuration without probing or reallocating."""
+        if self._camera is not None and not self._started:
+            self._camera.start(show_preview=False)
+            self._started = True
+            LOGGER.info("Camera resumed")
+
     def _close_camera(self):
         if self._camera is not None:
             try:

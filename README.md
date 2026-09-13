@@ -63,3 +63,11 @@ python3 -m spectrometer --touch-debug
 ```
 
 Touch and release each button. Logs show raw controller coordinates, mapped UI coordinates, releases, and placeholder button actions. Button centers are approximately `(82, 288)`, `(240, 288)`, and `(397, 288)`. If there are no touch logs, the controller is not reporting contacts; if mapped coordinates miss these locations, the panel needs a different coordinate mapping. Exit with Ctrl+C, then run `sudo systemctl start spectrometer` to restore the service.
+
+## Power button
+
+Connect the momentary switch between GPIO 21 (physical pin 40) and GND. The app
+enables the internal pull-up and debounces the switch. Each press toggles the
+backlight and camera/UI activity; holding it does not repeat. The Pi remains
+running. Pending captures are cancelled on pause; files already being written
+finish saving. Press again to resume. This applies to the hardware UI.

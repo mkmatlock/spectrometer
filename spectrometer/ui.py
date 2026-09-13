@@ -144,7 +144,26 @@ class SpectrometerUI:
                     self.draw(surface, font)
                     hardware.present(surface)
                     last_position = None
+                    active = True
                     while not stopping.is_set():
+                        if hardware.power_pressed():
+                            active = not active
+                            self._pointer = self._pressed = None
+                            last_position = None
+                            if not active:
+                                hardware.set_screen_active(False)
+                                if self.camera is not None:
+                                    self.camera.pause()
+                            else:
+                                if self.camera is not None:
+                                    self.camera.resume()
+                                self.draw(surface, font)
+                                hardware.present(surface)
+                                hardware.set_screen_active(True)
+                            LOGGER.info("Application %s", "active" if active else "paused")
+                        if not active:
+                            stopping.wait(0.05)
+                            continue
                         position = hardware.read_touch()
                         previous = self._pressed
                         if position is not None:

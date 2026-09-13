@@ -13,6 +13,7 @@ class LCDBackend:
 
     def __init__(self):
         self._last_touch = None
+        self._power_down = False
 
     def __enter__(self):
         from .st7796 import st7796
@@ -24,6 +25,11 @@ class LCDBackend:
             self._resources.callback(self.display.close)
             self.touch = ft6336u()
             self._resources.callback(self.touch.close)
+            from gpiozero import Button
+
+            # Momentary switch between BCM21 (physical pin 40) and ground.
+            self.power_button = Button(21, pull_up=True, bounce_time=0.05)
+            self._resources.callback(self.power_button.close)
         except BaseException:
             self._resources.close()
             raise
@@ -31,6 +37,16 @@ class LCDBackend:
 
     def __exit__(self, *exc):
         return self._resources.__exit__(*exc)
+
+    def power_pressed(self):
+        """One toggle per debounced press, even when the switch is held."""
+        down = self.power_button.is_pressed
+        pressed = down and not self._power_down
+        self._power_down = down
+        return pressed
+
+    def set_screen_active(self, active):
+        self.display.bl_DutyCycle(100 if active else 0)
 
     def present(self, surface, regions=None):
         import pygame

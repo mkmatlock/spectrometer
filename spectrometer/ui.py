@@ -24,7 +24,7 @@ class SpectrometerUI:
     """
 
     def __init__(self, *, fullscreen=True, on_capture=None, on_review=None,
-                 on_settings=None, camera=None, review_directory=None):
+                 on_settings=None, camera=None, review_directory=None, calibration_settings=None):
         self.fullscreen = fullscreen
         self.camera = camera
         self._camera_bar = None
@@ -47,6 +47,10 @@ class SpectrometerUI:
         self._peak_touch = None
         self._peaks = None
         self._review_peak_label = None
+        self.calibration_settings = calibration_settings if calibration_settings is not None else {}
+        self.calibration_settings.setdefault("scale", {})
+        self._keypad_open = False
+        self._label_input = ""
         self._calibration_dialog = False
         self._calibration_selected = None
         self._calibration_pressed = None
@@ -192,6 +196,7 @@ class SpectrometerUI:
                                     self._plot.AREA.move(self.spectrum_rect.topleft),
                                     self._plot.maximum)
         self._review_peak_label = None
+        self._spectrum_intensity = intensity
 
     def _select_peak(self, position):
         index = self._peaks.select(position)
@@ -207,8 +212,48 @@ class SpectrometerUI:
 
     def _label_peak(self):
         if self._peaks.selected is not None:
-            self._peak_message = "Peak labeling is not implemented yet"
+            self._label_pixel = int(self._peaks.indices[self._peaks.selected])
+            existing = self.calibration_settings["scale"].get(self._label_pixel)
+            self._label_input = "" if existing is None else format(existing, ".12f").rstrip("0").rstrip(".")
+            self._label_error = ""
+            self._keypad_open = True
+            self._peak_buttons = self.buttons
+            keys = ("1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "Bksp")
+            self.buttons = [(key, pygame.Rect(120 + (i % 3) * 82, 76 + (i // 3) * 44, 76, 40),
+                             lambda value=key: self._label_key(value)) for i, key in enumerate(keys)]
+            self.buttons.extend([
+                ("Accept", pygame.Rect(120, 258, 117, 44), self._accept_label),
+                ("Cancel", pygame.Rect(243, 258, 117, 44), self._cancel_label)])
             self._redraw = True
+
+    def _label_key(self, key):
+        if key == "Bksp":
+            self._label_input = self._label_input[:-1]
+        elif key == "." and "." not in self._label_input and len(self._label_input) < 12:
+            self._label_input = (self._label_input or "0") + "."
+        elif key in "0123456789" and len(key) == 1 and len(self._label_input) < 12:
+            self._label_input += key
+        self._label_error = ""
+        self._redraw = True
+
+    def _accept_label(self):
+        import math
+        try:
+            value = float(self._label_input)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError
+        except ValueError:
+            self._label_error = "Enter a numeric value"
+            self._redraw = True
+            return
+        self.calibration_settings["scale"][self._label_pixel] = value
+        self._keypad_open = False
+        self._back_peak()
+
+    def _cancel_label(self):
+        self._keypad_open = False
+        self.buttons = self._peak_buttons
+        self._redraw = True
 
     def _back_peak(self):
         self._peak_dialog = False
@@ -377,13 +422,15 @@ class SpectrometerUI:
             surface.blit(text, text.get_rect(topright=(self.spectrum_rect.right - 8,
                                                       self.spectrum_rect.top + 5)))
         if self.mode == "saved":
+            if self._scale_active:
+                self._draw_peak_labels(surface)
             marker = self._peaks.marker if self._peaks is not None else None
             if marker is not None:
                 area = self._plot.AREA.move(self.spectrum_rect.topleft)
                 pygame.draw.line(surface, "#ffd166", (marker[0], area.top),
                                  (marker[0], area.bottom - 1))
                 pygame.draw.circle(surface, "#ffd166", marker, 5, 2)
-            if self._peak_dialog:
+            if self._peak_dialog and not self._keypad_open:
                 # Keep the plot and selected peak unobscured above the dialog.
                 pygame.draw.rect(surface, PANEL, (48, 200, 384, 112), border_radius=8)
                 pygame.draw.rect(surface, BORDER, (48, 200, 384, 112), 1, border_radius=8)
@@ -421,6 +468,8 @@ class SpectrometerUI:
             title = self.review.message or "Channel filter: " + self.review.filter_channel
             text = small.render(title[:52], True, TEXT)
             surface.blit(text, text.get_rect(center=(240, 46)))
+        if self._keypad_open:
+            self._draw_label_keypad(surface)
         for i, (label, rect, _) in enumerate(self.buttons):
             if not surface.get_clip().colliderect(rect):
                 continue
@@ -428,6 +477,41 @@ class SpectrometerUI:
             pygame.draw.rect(surface, color, rect, border_radius=6)
             text = font.render(label, True, TEXT)
             surface.blit(text, text.get_rect(center=rect.center))
+
+    def _draw_label_keypad(self, surface):
+        shade = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 160))
+        surface.blit(shade, (0, 0))
+        pygame.draw.rect(surface, PANEL, (108, 8, 264, 304), border_radius=8)
+        pygame.draw.rect(surface, BORDER, (108, 8, 264, 304), 1, border_radius=8)
+        small = pygame.font.Font(None, 19)
+        title = self._label_error or "Label pixel %s" % self._label_pixel
+        text = small.render(title, True, TEXT)
+        surface.blit(text, text.get_rect(center=(240, 22)))
+        pygame.draw.rect(surface, BACKGROUND, (120, 36, 240, 32), border_radius=4)
+        text = pygame.font.Font(None, 26).render(self._label_input or "0", True, TEXT)
+        surface.blit(text, text.get_rect(midright=(352, 52)))
+
+    def _draw_peak_labels(self, surface):
+        area = self._plot.AREA.move(self.spectrum_rect.topleft)
+        font = pygame.font.Font(None, 18)
+        occupied = []
+        for pixel, value in sorted(self.calibration_settings["scale"].items()):
+            if not 0 <= pixel < len(self._spectrum_intensity):
+                continue
+            x = area.left + round(pixel * (area.width - 1) / (len(self._spectrum_intensity) - 1))
+            y = area.bottom - 1 - round(min(self._plot.maximum, max(0, self._spectrum_intensity[pixel]))
+                                       * (area.height - 1) / self._plot.maximum)
+            text = font.render(format(value, ".12g"), True, "#ffd166")
+            rect = text.get_rect(midbottom=(x, y - 7))
+            rect.clamp_ip(area)
+            while any(rect.colliderect(other) for other in occupied) and rect.bottom + rect.height <= area.bottom:
+                rect.y += rect.height
+            occupied.append(rect)
+            pygame.draw.line(surface, "#ffd166", (x, y), rect.midbottom)
+            pygame.draw.circle(surface, "#ffd166", (x, y), 4, 1)
+            pygame.draw.rect(surface, PANEL, rect)
+            surface.blit(text, rect)
 
     def _draw_calibration_dialog(self, surface, font):
         for label, rect, _ in self._settings_buttons:

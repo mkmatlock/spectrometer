@@ -50,7 +50,12 @@ own the camera.
 python3 -m spectrometer --fps 30 --exposure-us 20000
 ```
 
-Omit `--exposure-us` for automatic exposure. Full-resolution IMX477 capture is
+Settings are loaded from `~/.spectrometer_config` on startup; the file is created
+with defaults (5 fps, 4056×3040, automatic exposure) when absent. Camera settings,
+calibration labels, and the sensor bounding box persist between runs. `--fps` and
+`--exposure-us` save new values; use `--auto-exposure` to restore automatic exposure.
+
+Full-resolution IMX477 capture is
 limited to about 10 fps; the requested rate is capped to the sensor mode's limit.
 Longer exposures can reduce it further. Startup logs report the configured frame
 period and first-frame exposure. Use `--no-camera` for touch-only diagnostics or

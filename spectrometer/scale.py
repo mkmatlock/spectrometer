@@ -3,6 +3,36 @@
 import numpy as np
 
 
+class WavelengthScale:
+    """Piecewise linear calibration, including the two outer extrapolations."""
+
+    def __init__(self, labels):
+        points = sorted(labels.items())
+        self.pixels = np.array([p for p, _ in points], dtype=float)
+        self.values = np.array([v for _, v in points], dtype=float)
+        self.slopes = np.diff(self.values) / np.diff(self.pixels)
+
+    def wavelength(self, pixel):
+        segment = np.clip(np.searchsorted(self.pixels, pixel, side='right') - 1,
+                          0, len(self.slopes) - 1)
+        return self.values[segment] + (pixel - self.pixels[segment]) * self.slopes[segment]
+
+    def ticks(self, start, end):
+        # Work segment by segment: an inverse interpolation would incorrectly
+        # assume wavelength labels are monotonic in sensor pixel coordinates.
+        knots = [start, *self.pixels[(self.pixels > start) & (self.pixels < end)], end]
+        ticks = {}
+        for left, right in zip(knots, knots[1:]):
+            first, last = float(self.wavelength(left)), float(self.wavelength(right))
+            if first == last:
+                continue
+            low, high = sorted((first, last))
+            for value in range(int(np.ceil(low / 50)) * 50, int(np.floor(high / 50)) * 50 + 1, 50):
+                pixel = left + (value - first) * (right - left) / (last - first)
+                ticks[round(pixel, 8)] = (pixel, value)
+        return sorted(ticks.values())
+
+
 def peak_indices(intensity):
     values = np.asarray(intensity)
     # Treat a flat-topped peak as one peak at the centre of its plateau.

@@ -52,6 +52,7 @@ class SpectrometerUI:
         self._review_peak_label = None
         self.calibration_settings = calibration_settings if calibration_settings is not None else {}
         self.calibration_settings.setdefault("scale", {})
+        self._plot.set_calibration(self.calibration_settings['scale'])
         self._on_calibration_changed = on_calibration_changed
         self._keypad_open = False
         self._label_input = ""
@@ -118,6 +119,7 @@ class SpectrometerUI:
         self._redraw = True
 
     def _exit_settings(self):
+        self._plot.set_calibration(self.calibration_settings['scale'])
         self.mode = "live"
         self.buttons = self._live_buttons
         if self.camera is not None:
@@ -243,6 +245,8 @@ class SpectrometerUI:
         if self._plot.roi != tuple(frame.roi):
             self._plot = SpectrumPlot(frame.roi)
             self._redraw = True
+        if self._plot.set_calibration({} if self._scale_active else self.calibration_settings['scale']):
+            self._redraw = True
         self._plot.update(frame.intensity)
 
     def _reset_peaks(self, intensity):
@@ -257,6 +261,8 @@ class SpectrometerUI:
         index = self._peaks.select(position)
         self._peak_message = "No peaks found" if index is None else "Peak at pixel %s" % index
         if not self._scale_active:
+            if index is not None and self._plot.scale is not None:
+                self._peak_message = 'Peak at %.1f nm' % self._plot.scale.wavelength(index)
             self._review_peak_label = self._peak_message
             self._redraw = True
             return

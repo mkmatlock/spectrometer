@@ -19,6 +19,24 @@ class SpectrumPlot:
         self._xs = np.repeat(np.arange(self.AREA.left, self.AREA.right), 2)
         self._background = None
         self.points = None
+        self._labels = ()
+        self.scale = None
+
+    def set_calibration(self, labels):
+        points = tuple(sorted(labels.items()))
+        if points == self._labels:
+            return False
+        from .scale import WavelengthScale
+        self._labels = points
+        self.scale = WavelengthScale(labels) if len(points) >= 2 else None
+        self._background = None
+        return True
+
+    def axis_ticks(self):
+        x0, _, x1, _ = self.roi
+        if self.scale is not None:
+            return self.scale.ticks(x0, x1 - 1)
+        return [(value, value) for value in range(int(np.ceil(x0 / 500)) * 500, x1, 500)]
 
     def update(self, intensity):
         values = np.asarray(intensity)
@@ -45,13 +63,14 @@ class SpectrumPlot:
             y = self.AREA.bottom - 1 - round(fraction * (self.AREA.height - 1))
             pygame.draw.line(surface, "#304050", (self.AREA.left, y), (self.AREA.right - 1, y))
         x0, _, x1, _ = self.roi
-        for value in np.arange(round(x0 / 500) * 500, x1, 500, dtype=int):
-            x = self.AREA.right - 1 - round((value - x0) * (self.AREA.width - 1) / (x1 - x0 - 1))
+        for pixel, value in self.axis_ticks():
+            x = self.AREA.right - 1 - round((pixel - x0) * (self.AREA.width - 1) / (x1 - x0 - 1))
+            pygame.draw.line(surface, "#a9bacb", (x, self.AREA.bottom - 1), (x, self.AREA.bottom + 2))
             label = font.render(str(value), True, "#a9bacb")
             rect = label.get_rect(midtop=(x, self.AREA.bottom + 4))
             rect.clamp_ip(surface.get_rect())
             surface.blit(label, rect)
-        label = font.render("Pixel", True, "#a9bacb")
+        label = font.render("Wavelength (nm)" if self.scale is not None else "Pixel", True, "#a9bacb")
         surface.blit(label, label.get_rect(midbottom=(self.AREA.centerx, self.SIZE[1] - 3)))
         return surface
 

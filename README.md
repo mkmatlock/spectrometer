@@ -68,7 +68,15 @@ period and first-frame exposure. Use `--no-camera` for touch-only diagnostics or
 `--windowed --no-camera` for a desktop preview without Pi hardware.
 
 
+## REST API
+
+The application also serves a REST API on port 8000. GET `/capture`, `/list`,
+`/download/<spectrum_number>` (numeric ID), and `/settings` currently return empty
+JSON results (`[]` for `/list`, `{}` otherwise). POST `/capture` is also supported.
+To run only the API, use `python3 -m spectrometer.server`.
+
 ## Touch diagnostics
+
 ```sh
 python3 -m spectrometer --touch-debug
 ```

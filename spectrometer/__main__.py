@@ -27,6 +27,7 @@ def main():
     from .ui import SpectrometerUI
     from .camera import CameraSettings, CameraStream
     from .config import SettingsStore
+    from .server import running_server
 
     try:
         store = SettingsStore()
@@ -40,10 +41,11 @@ def main():
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
-    SpectrometerUI(fullscreen=not args.windowed,
-                   calibration_settings=deepcopy(store.data['calibration']),
-                   on_calibration_changed=lambda values: store.update(calibration=values),
-                   camera=None if args.no_camera else CameraStream(settings)).run()
+    with running_server():
+        SpectrometerUI(fullscreen=not args.windowed,
+                       calibration_settings=deepcopy(store.data['calibration']),
+                       on_calibration_changed=lambda values: store.update(calibration=values),
+                       camera=None if args.no_camera else CameraStream(settings)).run()
 
 
 if __name__ == "__main__":

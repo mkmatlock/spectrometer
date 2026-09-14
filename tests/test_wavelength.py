@@ -48,7 +48,8 @@ class WavelengthTests(unittest.TestCase):
         self.addCleanup(ui.settings_view.close)
         values = np.zeros(3500, np.int32)
         values[1500] = 50000
-        frame = SpectrumFrame(bytes(462 * 38 * 3), values)
+        frame = SpectrumFrame(bytes(462 * 38 * 3), values,
+                              calibration={'scale': {1000: 700, 2000: 500}})
         ui.mode = 'saved'
         ui._update_plot(frame)
         ui._reset_peaks(values)

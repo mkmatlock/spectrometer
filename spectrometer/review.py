@@ -1,6 +1,7 @@
 """Capture browsing and background loading for the small touchscreen."""
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 import pickle
@@ -8,6 +9,12 @@ import pickle
 import numpy as np
 
 from .camera import BAR_SIZE, PACKED_12_FORMATS, SENSOR_SIZE, SPECTRUM_ROI, SpectrumFrame
+
+
+def record_calibration(record):
+    """Read nested calibration, with support for the original capture layout."""
+    return deepcopy(record.get('instrument_settings', {}).get(
+        'calibration_settings', record.get('calibration_settings', {})))
 
 
 def record_roi(record):
@@ -34,7 +41,7 @@ def load_spectrum(path):
         bar = raw_bar(record)
     if not isinstance(bar, bytes) or len(bar) != BAR_SIZE[0] * BAR_SIZE[1] * 3:
         raise ValueError('Invalid camera bar data')
-    return SpectrumFrame(bar, intensity.copy(), roi)
+    return SpectrumFrame(bar, intensity.copy(), roi, record_calibration(record))
 
 
 def raw_rgb(record):
@@ -83,7 +90,8 @@ def load_channels(path):
                             cv2.REDUCE_SUM, dtype=cv2.CV_32S).reshape(-1)
         bar = np.zeros_like(preview)
         bar[:, :, index] = preview[:, :, index]
-        result[channel] = SpectrumFrame(bar.tobytes(), totals, roi)
+        result[channel] = SpectrumFrame(bar.tobytes(), totals, roi,
+                                        record_calibration(record))
     return result
 
 

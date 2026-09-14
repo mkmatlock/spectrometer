@@ -41,6 +41,10 @@ class CaptureTests(unittest.TestCase):
     def test_capture_uses_actual_exposure_and_owned_data(self):
         with tempfile.TemporaryDirectory() as directory:
             stream = CameraStream(capture_directory=directory)
+            calibration = {'scale': {100: 700, 200: 500},
+                           'sensor_area': (0, 1550, 3500, 1800),
+                           'future_calibration': {'values': [1, 2]}}
+            stream.set_calibration(calibration)
             stream._raw_config = {"size": (4056, 3040), "format": "SBGGR12_CSI2P", "stride": 6084}
             request = Mock()
             request.get_metadata.return_value = {"ExposureTime": 4321}
@@ -48,6 +52,9 @@ class CaptureTests(unittest.TestCase):
             frame = SpectrumFrame(b"", np.array([123, 456], dtype=np.int32))
             timestamp = datetime(2026, 9, 12, 20, 10, 0, tzinfo=timezone.utc)
             stream._queue_capture(request, frame, timestamp)
+            calibration['scale'][100] = 900
+            calibration['future_calibration']['values'][0] = 9
+            stream.set_calibration(calibration)
             frame.intensity[:] = 0
             stream.close()  # Must wait for the writer.
             path = next(Path(directory).glob("*.pkl"))
@@ -57,8 +64,15 @@ class CaptureTests(unittest.TestCase):
             self.assertEqual(record["instrument_settings"], {
                 "exposure_time_us": 4321,
                 "raw_camera_format": stream._raw_config,
+                "calibration_settings": {
+                    "scale": {100: 700, 200: 500}, "sensor_area": frame.roi,
+                    "future_calibration": {"values": [1, 2]}},
             })
             self.assertNotIn("raw_camera_format", record)
+            self.assertNotIn('calibration_settings', record)
+            self.assertEqual(record['instrument_settings']['calibration_settings'], {
+                'scale': {100: 700, 200: 500}, 'sensor_area': frame.roi,
+                'future_calibration': {'values': [1, 2]}})
             np.testing.assert_array_equal(record["spectrum_intensity"], [123, 456])
             self.assertEqual(record["timestamp"], timestamp)
 

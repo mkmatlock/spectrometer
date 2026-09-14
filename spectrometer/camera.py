@@ -1,6 +1,7 @@
 """Full-resolution IMX477 acquisition with an OpenCV spectrum-bar preview."""
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
+from copy import deepcopy
 import logging
 import math
 import threading
@@ -49,6 +50,7 @@ class SpectrumFrame:
     bar: bytes
     intensity: object  # Owned int32 array, one total per sensor column.
     roi: tuple = SPECTRUM_ROI
+    calibration: dict = field(default_factory=dict)
 
 
 def process_frame(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE):
@@ -84,6 +86,7 @@ class CameraStream:
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spectrum-save")
         self._capture_pending = False
         self._capture_busy = False
+        self._calibration = {'scale': {}, 'sensor_area': self.settings.roi}
 
     def __enter__(self):
         started = time.monotonic()
@@ -199,12 +202,16 @@ class CameraStream:
 
     def _queue_capture(self, request, frame, timestamp):
         try:
+            with self._lock:
+                calibration = deepcopy(self._calibration)
+            calibration['sensor_area'] = tuple(frame.roi)
             metadata = request.get_metadata()
             record = {
                 "timestamp": timestamp,
                 "instrument_settings": {
                     "exposure_time_us": metadata["ExposureTime"],
                     "raw_camera_format": self._raw_config.copy(),
+                    "calibration_settings": calibration,
                 },
                 # make_array copies the packed sensor buffer before libcamera
                 # recycles it. Never retain the mapped camera buffer in a worker.
@@ -262,6 +269,11 @@ class CameraStream:
         with self._lock:
             self._latest = None
         LOGGER.info("Camera paused")
+
+    def set_calibration(self, calibration):
+        """Own a copy so later UI edits cannot change a queued capture."""
+        with self._lock:
+            self._calibration = deepcopy(calibration)
 
     def set_roi(self, roi):
         """Apply an accepted sensor area while acquisition is paused."""

@@ -52,6 +52,8 @@ class SpectrometerUI:
         self._review_peak_label = None
         self.calibration_settings = calibration_settings if calibration_settings is not None else {}
         self.calibration_settings.setdefault("scale", {})
+        if self.camera is not None:
+            self.camera.set_calibration(self.calibration_settings)
         self._plot.set_calibration(self.calibration_settings['scale'])
         self._on_calibration_changed = on_calibration_changed
         self._keypad_open = False
@@ -225,6 +227,7 @@ class SpectrometerUI:
             from .camera import BAR_SIZE
 
             self._plot = SpectrumPlot(frame.roi)
+            self.mode = "saved"
             self._update_plot(frame)
             self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
             self.mode = "saved"
@@ -269,6 +272,7 @@ class SpectrometerUI:
         self.calibration_settings.update(updated)
         if self.camera is not None:
             self.camera.set_roi(roi)
+            self.camera.set_calibration(self.calibration_settings)
         self._exit_review()
 
     def _update_plot(self, frame):
@@ -276,7 +280,8 @@ class SpectrometerUI:
         if self._plot.roi != tuple(frame.roi):
             self._plot = SpectrumPlot(frame.roi)
             self._redraw = True
-        if self._plot.set_calibration({} if self._scale_active else self.calibration_settings['scale']):
+        calibration = frame.calibration if self.mode == 'saved' else self.calibration_settings
+        if self._plot.set_calibration({} if self._scale_active else calibration.get('scale', {})):
             self._redraw = True
         self._plot.update(frame.intensity)
 
@@ -372,6 +377,8 @@ class SpectrometerUI:
             self._redraw = True
             return False
         self.calibration_settings.update(updated)
+        if self.camera is not None:
+            self.camera.set_calibration(self.calibration_settings)
         return True
 
     def _cancel_label(self):

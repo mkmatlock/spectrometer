@@ -19,10 +19,13 @@ class APIHandler(BaseHTTPRequestHandler):
     def capture(self):
         return {}
 
-    def list_spectra(self):
+    def list(self):
         return []
 
-    def download(self, spectrum_number):
+    def download(self, spectrum_id):
+        return {}
+    
+    def delete(self, spectrum_id):
         return {}
 
     def settings(self):
@@ -39,20 +42,17 @@ class APIHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
-        endpoints = {'/capture': self.capture, '/list': self.list_spectra,
+        endpoints = {'/capture': self.capture, 
+                     '/list': self.list,
                      '/settings': self.settings}
         if path in endpoints:
             self._respond(endpoints[path]())
         elif match := re.fullmatch(r'/download/([0-9]+)', path):
             self._respond(self.download(match.group(1)))
+        elif match := re.fullmatch(r'/delete/([0-9]+)', path):
+            self._respond(self.delete(match.group(1)))
         else:
             self._respond({'error': 'Not found'}, 404)
-
-    def do_POST(self):
-        if urlsplit(self.path).path == '/capture':
-            self._respond(self.capture())
-        else:
-            self._respond({'error': 'Method not allowed'}, 405)
 
     def log_message(self, message, *args):
         LOGGER.info('%s - %s', self.client_address[0], message % args)

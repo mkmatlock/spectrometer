@@ -40,7 +40,7 @@ class CaptureCalibrationTests(unittest.TestCase):
                 ui.review.future.result(timeout=5)
                 ui._poll_review()
                 ui._select_peak(ui._peaks.positions[0])
-                self.assertEqual(ui._review_peak_label, 'Peak at 600.0 nm')
+                self.assertEqual(ui._review_peak_label, '600.0 nm')
                 self.assertEqual(ui.calibration_settings['scale'][1000], 900)
                 with patch('spectrometer.review.raw_rgb', return_value=np.zeros((250, 3500, 3), np.uint8)):
                     channels = load_channels(path)
@@ -60,7 +60,7 @@ class CaptureCalibrationTests(unittest.TestCase):
                 ui._poll_review()
                 self.assertIsNone(ui._plot.scale)
                 ui._select_peak(ui._peaks.positions[0])
-                self.assertEqual(ui._review_peak_label, 'Peak at pixel 1500')
+                self.assertEqual(ui._review_peak_label, 'Pixel 1500')
                 ui._exit_review()
                 self.assertEqual(ui._plot.scale.wavelength(1500), 850)
             finally:

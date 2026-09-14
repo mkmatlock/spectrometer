@@ -86,6 +86,8 @@ class CameraStream:
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spectrum-save")
         self._capture_pending = False
         self._capture_busy = False
+        self._capture_draft = None
+        self._defer_save = False
         self._calibration = {'scale': {}, 'sensor_area': self.settings.roi}
 
     def __enter__(self):
@@ -181,12 +183,13 @@ class CameraStream:
                 if capture:
                     self._capture_busy = False
 
-    def request_capture(self):
+    def request_capture(self, defer_save=False):
         """Save the next frame; allow only one capture in flight on the Pi Zero."""
         with self._lock:
             if not self._started or self._capture_busy:
                 LOGGER.info("Capture unavailable: camera stopped or a capture is still saving")
                 return False
+            self._defer_save = defer_save
             self._capture_pending = self._capture_busy = True
         LOGGER.info("Capture requested")
         return True
@@ -220,11 +223,31 @@ class CameraStream:
                 "spectrum_bar": frame.bar,
                 "spectrum_roi": frame.roi,
             }
-            self._writer.submit(self._save_capture, record)
+            if self._defer_save:
+                with self._lock:
+                    self._capture_draft = record
+            else:
+                self._writer.submit(self._save_capture, record)
         except Exception:
             LOGGER.exception("Could not prepare spectrum capture")
             with self._lock:
                 self._capture_busy = False
+
+    def take_capture_draft(self):
+        with self._lock:
+            record, self._capture_draft = self._capture_draft, None
+            return record
+
+    def discard_capture(self):
+        # Caller pauses acquisition first, waiting for any callback to finish.
+        with self._lock:
+            self._capture_draft = None
+            self._capture_pending = self._capture_busy = False
+
+    def save_named_capture(self, record, name):
+        from .capture import save_capture
+        named = dict(record, name=name)
+        return self._writer.submit(save_capture, named, self._capture_directory)
 
     def _save_capture(self, record):
         from .capture import save_capture

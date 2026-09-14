@@ -54,14 +54,14 @@ class WavelengthTests(unittest.TestCase):
         ui._update_plot(frame)
         ui._reset_peaks(values)
         ui._select_peak(ui._peaks.positions[0])
-        self.assertEqual(ui._review_peak_label, 'Peak at 600.0 nm')
+        self.assertEqual(ui._review_peak_label, '600.0 nm')
         self.assertIsNotNone(ui._peaks.marker)
         self.assertFalse(ui._peak_dialog)
         ui._scale_active = True
         ui._update_plot(frame)
         self.assertIsNone(ui._plot.scale)
         ui._select_peak(ui._peaks.positions[0])
-        self.assertEqual(ui._peak_message, 'Peak at pixel 1500')
+        self.assertEqual(ui._peak_message, 'Pixel 1500')
         self.assertTrue(ui._peak_dialog)
         ui._update_scale(2000, None)
         ui._scale_active = False

@@ -66,7 +66,7 @@ class SpectrometerUI:
         self._calibration_rows = [(name, pygame.Rect(64, 80 + i * 44, 352, 40))
                                   for i, name in enumerate(("Background", "Sensor", "Scale"))]
         if on_capture is None and camera is not None:
-            on_capture = camera.request_capture
+            on_capture = self._name_capture
         self.spectrum_rect = pygame.Rect(8, 8, 464, 200)
         # Match the image pixels (inside its border) to the graph's data span.
         self.camera_slice_rect = pygame.Rect(
@@ -77,9 +77,100 @@ class SpectrometerUI:
             ("Review", pygame.Rect(165, 264, 150, 48), on_review or self._open_review),
             ("Settings", pygame.Rect(323, 264, 149, 48), on_settings or self._open_settings),
         ]
+        self._capture_record = None
+        self._capture_save = None
         self._pressed = None
         self._pointer = None
         self._live_buttons = self.buttons
+
+    def _name_capture(self):
+        if not self.camera.request_capture(defer_save=True):
+            return
+        self.mode = 'capture'
+        self._capture_record = None
+        self._capture_name = ''
+        self._capture_message = 'Capturing...'
+        self._capture_upper = False
+        self._capture_keyboard()
+        self._redraw = True
+
+    def _resume_pending_capture(self):
+        if self.mode == 'capture' and self._capture_record is None:
+            self.camera.resume()
+            self.camera.request_capture(defer_save=True)
+
+    def _capture_keyboard(self):
+        self.buttons = []
+        rows = ('1234567890', 'qwertyuiop', 'asdfghjkl⌫', '⇧zxcvbnm␣')
+        actions = {'⇧': 'Shift', '␣': 'Space', '⌫': 'Bksp'}
+        for row, keys in enumerate(rows):
+            weights = [1.5 if key in ('⇧', '␣') else 1 for key in keys]
+            unit = (464 - 4 * (len(keys) - 1)) / sum(weights)
+            left = 8.0
+            for key, weight in zip(keys, weights):
+                width = round(left + unit * weight) - round(left)
+                label = key.upper() if self._capture_upper else key
+                action = actions.get(key, label)
+                self.buttons.append((label, pygame.Rect(round(left), 66 + row * 48, width, 44),
+                                     lambda value=action: self._capture_key(value)))
+                left += unit * weight + 4
+        self.buttons.extend([('Accept', pygame.Rect(8, 264, 228, 48), self._accept_capture),
+                             ('Cancel', pygame.Rect(244, 264, 228, 48), self._cancel_capture)])
+
+    def _capture_key(self, key):
+        if key == 'Shift':
+            self._capture_upper = not self._capture_upper
+            self._capture_keyboard()
+        elif key == 'Bksp':
+            self._capture_name = self._capture_name[:-1]
+        elif len(self._capture_name) < 64:
+            self._capture_name += ' ' if key == 'Space' else key
+        self._redraw = True
+
+    def _accept_capture(self):
+        if self._capture_record is None:
+            return
+        if not self._capture_name.strip():
+            self._capture_message = 'Enter a name'
+        else:
+            self._capture_save = self.camera.save_named_capture(self._capture_record, self._capture_name.strip())
+            self._capture_message = 'Saving...'
+            self.buttons = []
+        self._redraw = True
+
+    def _cancel_capture(self):
+        self.camera.pause()
+        self.camera.discard_capture()
+        self._capture_record = None
+        self.mode = 'live'
+        self.buttons = self._live_buttons
+        self.camera.resume()
+        self._redraw = True
+
+    def _poll_capture(self):
+        if self.mode != 'capture':
+            return
+        if self._capture_save is not None:
+            if not self._capture_save.done():
+                return
+            future, self._capture_save = self._capture_save, None
+            try:
+                future.result()
+            except Exception:
+                LOGGER.exception('Could not save named capture')
+                self._capture_message = 'Save failed. Retry or cancel.'
+                self._capture_keyboard()
+                self._redraw = True
+            else:
+                self._cancel_capture()
+            return
+        if self._capture_record is None:
+            record = self.camera.take_capture_draft()
+            if record is not None:
+                self.camera.pause()
+                self._capture_record = record
+                self._capture_message = 'Name spectrum'
+                self._redraw = True
 
     def _open_settings(self):
         if self.camera is not None:
@@ -105,6 +196,7 @@ class SpectrometerUI:
 
     def _cancel_shutdown(self):
         self.mode, self.buttons = self._shutdown_view
+        self._resume_pending_capture()
         if self.camera is not None and self.mode == 'live':
             self.camera.resume()
         self._redraw = True
@@ -503,7 +595,7 @@ class SpectrometerUI:
 
     def _pointer_event(self, pointer, position, down):
         """Shared button handling for desktop events and polled hardware touch."""
-        if self.mode == 'shutdown':
+        if self.mode in ('shutdown', 'capture'):
             if down and self._pointer is None:
                 self._pointer = pointer
                 self._pressed = self._button_at(position)
@@ -569,6 +661,29 @@ class SpectrometerUI:
     def draw(self, surface, font):
         """Draw cached spectrum axes, trace, camera slice, and touch controls."""
         surface.fill(BACKGROUND)
+        if self.mode == "capture":
+            text = font.render(self._capture_message, True, TEXT)
+            surface.blit(text, (10, 5))
+            pygame.draw.rect(surface, PANEL, (8, 28, 464, 30))
+            text = font.render(self._capture_name, True, TEXT)
+            previous_clip = surface.get_clip()
+            surface.set_clip(previous_clip.clip(pygame.Rect(12, 30, 456, 26)))
+            surface.blit(text, (min(12, 468 - text.get_width()), 32))
+            surface.set_clip(previous_clip)
+            for i, (label, rect, _) in enumerate(self.buttons):
+                pygame.draw.rect(surface, PRESSED if self._pressed == i else BUTTON, rect, border_radius=4)
+                key_font = font
+                if label in ('⇧', '␣', '⌫'):
+                    if not hasattr(self, '_keyboard_symbol_font'):
+                        self._keyboard_symbol_font = pygame.font.SysFont('dejavusans,applesymbols,arial', 24)
+                    key_font = self._keyboard_symbol_font
+                    if label == '⌫':
+                        if not hasattr(self, '_keyboard_backspace_font'):
+                            self._keyboard_backspace_font = pygame.font.SysFont('dejavusans,applesymbols,arial', 18)
+                        key_font = self._keyboard_backspace_font
+                text = key_font.render(label, True, TEXT)
+                surface.blit(text, text.get_rect(center=rect.center))
+            return
         if self.mode == 'shutdown':
             pygame.draw.rect(surface, PANEL, (48, 88, 384, 144), border_radius=8)
             pygame.draw.rect(surface, BORDER, (48, 88, 384, 144), 1, border_radius=8)
@@ -813,6 +928,7 @@ class SpectrometerUI:
                                 if self.camera is not None:
                                     self.camera.pause()
                             else:
+                                self._resume_pending_capture()
                                 if self.camera is not None and self.mode == "live":
                                     self.camera.resume()
                                 self.draw(surface, font)
@@ -834,6 +950,7 @@ class SpectrometerUI:
                             self._pointer_event("lcd", last_position, False)
                             last_position = None
                         new_frame = self._poll_camera()
+                        self._poll_capture()
                         self._poll_review()
                         self._poll_settings()
                         if self._redraw:
@@ -888,6 +1005,7 @@ class SpectrometerUI:
                     if self._sensor is not None:
                         self._sensor.start = None
                 new_frame = self._poll_camera()
+                self._poll_capture()
                 self._poll_review()
                 self._poll_settings()
                 if self._redraw or new_frame or previous != self._pressed or event.type in (

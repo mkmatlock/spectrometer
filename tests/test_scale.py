@@ -31,7 +31,7 @@ class ScaleTests(unittest.TestCase):
             np.testing.assert_array_equal(ui._peaks.indices, [1200])
             ui._back_filter()
             ui._select_peak(ui._peaks.positions[0])
-            self.assertEqual(ui._peak_message, 'Valley at pixel 1200')
+            self.assertEqual(ui._peak_message, 'Pixel 1200')
             self.assertEqual([b[0] for b in ui.buttons], ['Label', 'Back'])
             ui._back_peak()
             self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Back'])

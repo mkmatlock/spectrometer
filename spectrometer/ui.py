@@ -295,6 +295,8 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_review(self):
+        if self.mode in ("review", "saved", "sensor") and self.review.poll_names():
+            self._redraw = True
         if self.mode == "saved":
             loading = self.review.filter_future is not None
             frame = self.review.poll_filter()
@@ -713,6 +715,13 @@ class SpectrometerUI:
             surface.blit(text, text.get_rect(center=rect.center))
         if self.mode in ("live", "saved") and self._camera_bar is not None:
             surface.blit(self._camera_bar, self.camera_slice_rect.move(1, 1))
+        if self.mode in ('saved', 'sensor'):
+            small = pygame.font.Font(None, 18)
+            # Reserve the right side for a touched peak's position.
+            rect = pygame.Rect(16, 12, 300, 18)
+            pygame.draw.rect(surface, PANEL, rect)
+            text = self._fit_text(small, self.review.name(self.review.loaded_path), rect.width)
+            surface.blit(text, rect.topleft)
         if self.mode == "saved" and not self._scale_active and self._review_peak_label:
             small = pygame.font.Font(None, 18)
             text = small.render(self._review_peak_label, True, "#ffd166")
@@ -832,6 +841,14 @@ class SpectrometerUI:
             text = font.render(name, True, TEXT)
             surface.blit(text, text.get_rect(midleft=(rect.left + 12, rect.centery)))
 
+    @staticmethod
+    def _fit_text(font, value, width):
+        text = value
+        while text and font.size(text)[0] > width:
+            value = value[:-1]
+            text = value + '...' if value else ''
+        return font.render(text, True, TEXT)
+
     def _draw_review(self, surface, font):
         small = pygame.font.Font(None, 19)
         header = self.review.message or ("Review captures" if self.review.entries else "No captures found")
@@ -844,7 +861,17 @@ class SpectrometerUI:
             index = row + self.review.offset
             rect = pygame.Rect(8, 34 + row * 42, 450, 40)
             pygame.draw.rect(surface, BUTTON if index == self.review.selected else PANEL, rect)
-            surface.blit(font.render(path.stem.removeprefix("spectrum-"), True, TEXT), (16, rect.y + 10))
+            date = path.stem.removeprefix('spectrum-')
+            try:
+                from datetime import datetime
+                date = datetime.strptime(date, '%Y-%m-%d-%H-%M-%S').strftime('%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                pass
+            date_text = small.render(date, True, MUTED)
+            date_rect = date_text.get_rect(midright=(rect.right - 8, rect.centery))
+            surface.blit(date_text, date_rect)
+            text = self._fit_text(font, self.review.name(path), max(0, date_rect.left - 24))
+            surface.blit(text, text.get_rect(midleft=(16, rect.centery)))
         if len(self.review.entries) > 5:
             height = max(10, 210 * 5 // len(self.review.entries))
             y = 34 + (210 - height) * self.review.offset // (len(self.review.entries) - 5)
@@ -993,7 +1020,8 @@ class SpectrometerUI:
                 # Block while idle instead of continuously repainting the SPI LCD.
                 event = pygame.event.wait(20) if (self.camera is not None or self.review.future is not None
                                                 or self.settings_view.future is not None
-                                                or self.review.filter_future is not None) else pygame.event.wait()
+                                                or self.review.filter_future is not None
+                                                or self.mode in ("review", "saved", "sensor")) else pygame.event.wait()
                 if event.type == pygame.QUIT or (
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
                 ):

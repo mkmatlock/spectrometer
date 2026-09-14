@@ -95,6 +95,20 @@ def load_channels(path):
     return result
 
 
+def capture_names(paths):
+    result = {}
+    for path in paths:
+        try:
+            with path.open('rb') as source:
+                record = pickle.load(source)
+            name = record.get('name', '')
+            result[path] = name.strip() if isinstance(name, str) and name.strip() else 'Unnamed spectrum'
+            del record
+        except Exception:
+            result[path] = 'Unreadable spectrum'
+    return result
+
+
 class ReviewList:
     ROW_HEIGHT = 42
     VISIBLE = 5
@@ -102,6 +116,9 @@ class ReviewList:
     def __init__(self, directory=None):
         self.directory = Path.home() if directory is None else Path(directory)
         self.entries = []
+        self.names = {}
+        self._names_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='spectrum-names')
+        self._names_future = None
         self.offset = 0
         self.selected = None
         self.message = ''
@@ -129,6 +146,22 @@ class ReviewList:
             self.message = str(exc)
         self.offset = 0
         self.selected = None
+
+    def poll_names(self):
+        changed = False
+        if self._names_future is not None and self._names_future.done():
+            self.names.update(self._names_future.result())
+            self._names_future = None
+            changed = True
+        if self._names_future is None:
+            missing = [path for path in self.entries[self.offset:self.offset + self.VISIBLE]
+                       if path not in self.names]
+            if missing:
+                self._names_future = self._names_executor.submit(capture_names, missing)
+        return changed
+
+    def name(self, path):
+        return self.names.get(path, 'Loading name...') if path else 'Unnamed spectrum'
 
     def scroll(self, rows):
         self.offset = max(0, min(max(0, len(self.entries) - self.VISIBLE), self.offset + rows))
@@ -225,4 +258,5 @@ class ReviewList:
         return True
 
     def close(self):
+        self._names_executor.shutdown(wait=True, cancel_futures=True)
         self._executor.shutdown(wait=True, cancel_futures=True)

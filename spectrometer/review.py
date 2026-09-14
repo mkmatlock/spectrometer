@@ -165,14 +165,31 @@ class ReviewList:
             self.filter_future = None
         self._wanted_channel = None
 
+    def _channel_frame(self, channels):
+        original = self._channel_cache['All']
+        if len(channels) == 3:
+            return original
+        if not channels:
+            return SpectrumFrame(bytes(len(original.bar)), np.zeros_like(original.intensity),
+                                 original.roi, original.calibration)
+        frames = [self._channel_cache[name] for name in channels]
+        # Average enabled channels to keep the intensity range independent of
+        # channel count. Their preview bytes occupy disjoint RGB components.
+        totals = np.rint(sum(frame.intensity.astype(float) for frame in frames) / len(frames)).astype(np.int32)
+        bar = sum(np.frombuffer(frame.bar, np.uint8) for frame in frames).tobytes()
+        return SpectrumFrame(bar, totals, original.roi, original.calibration)
+
     def request_filter(self, channel):
         if channel not in ('Red', 'Green', 'Blue', 'All'):
             raise ValueError('Unknown channel')
-        self._wanted_channel = channel
+        return self.request_channels(('Red', 'Green', 'Blue') if channel == 'All' else (channel,))
+
+    def request_channels(self, channels):
+        self._wanted_channel = tuple(channels)
         self.message = ''
-        if channel in self._channel_cache:
-            self.filter_channel = channel
-            return self._channel_cache[channel]
+        if len(channels) in (0, 3) or all(name in self._channel_cache for name in channels):
+            self.filter_channel = self._wanted_channel
+            return self._channel_frame(channels)
         if self.filter_future is None:
             self.filter_future = self._executor.submit(load_channels, self.loaded_path)
         self.message = 'Loading channels...'
@@ -186,7 +203,7 @@ class ReviewList:
             self._channel_cache.update(future.result())
             self.message = ''
             self.filter_channel = self._wanted_channel
-            return self._channel_cache[self.filter_channel]
+            return self._channel_frame(self.filter_channel)
         except Exception as exc:
             self.message = 'Cannot filter: ' + str(exc)
             return None

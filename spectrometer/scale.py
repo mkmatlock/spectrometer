@@ -33,20 +33,21 @@ class WavelengthScale:
         return sorted(ticks.values())
 
 
-def peak_indices(intensity):
+def peak_indices(intensity, absorption=False):
     values = np.asarray(intensity)
     # Treat a flat-topped peak as one peak at the centre of its plateau.
     starts = np.r_[0, np.flatnonzero(values[1:] != values[:-1]) + 1]
     ends = np.r_[starts[1:] - 1, len(values) - 1]
     interior = (starts > 0) & (ends < len(values) - 1)
     starts, ends = starts[interior], ends[interior]
-    peaks = (values[starts] > values[starts - 1]) & (values[ends] > values[ends + 1])
+    compare = np.less if absorption else np.greater
+    peaks = compare(values[starts], values[starts - 1]) & compare(values[ends], values[ends + 1])
     return ((starts[peaks] + ends[peaks]) // 2).astype(np.int32)
 
 
 class PeakSelection:
-    def __init__(self, intensity, area, maximum, pixel_origin=0):
-        self.indices = peak_indices(intensity)
+    def __init__(self, intensity, area, maximum, pixel_origin=0, absorption=False):
+        self.indices = peak_indices(intensity, absorption)
         self.positions = np.empty((len(self.indices), 2), dtype=float)
         self.positions[:, 0] = area.right - 1 - self.indices * (area.width - 1) / (len(intensity) - 1)
         self.positions[:, 1] = area.bottom - 1 - np.clip(np.asarray(intensity)[self.indices], 0, maximum) * ((area.height - 1) / maximum)

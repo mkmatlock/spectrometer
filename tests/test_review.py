@@ -112,7 +112,7 @@ class ReviewTests(unittest.TestCase):
                 ui.review.future.result(timeout=5)
                 ui._poll_review()
                 self.assertEqual(ui.mode, 'saved')
-                self.assertEqual([b[0] for b in ui.buttons], ['Delete', 'Filter', 'Back'])
+                self.assertEqual([b[0] for b in ui.buttons], ['Delete', 'Modes', 'Back'])
                 self.assertEqual(ui._camera_bar.get_at((0, 0))[:3], (255, 0, 0))
                 ui.buttons[2][2]()
                 self.assertEqual(ui.mode, 'review')

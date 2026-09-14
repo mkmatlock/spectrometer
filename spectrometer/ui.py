@@ -44,6 +44,8 @@ class SpectrometerUI:
         self._delete_dialog = False
         self._filter_dialog = False
         self._scale_active = False
+        self._channels = {"Red", "Green", "Blue"}
+        self._absorption = False
         self._sensor_active = False
         self._sensor = None
         self._peak_dialog = False
@@ -201,12 +203,14 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_review(self):
-        if self.mode == "saved" and self._filter_dialog:
+        if self.mode == "saved":
             loading = self.review.filter_future is not None
             frame = self.review.poll_filter()
             if frame is not None:
                 self._apply_filter(frame)
             elif loading and self.review.filter_future is None:
+                applied = self.review.filter_channel
+                self._channels = set(('Red', 'Green', 'Blue') if applied == 'All' else applied)
                 self._redraw = True
         if self.mode != "review":
             return
@@ -226,6 +230,8 @@ class SpectrometerUI:
             from .plot import SpectrumPlot
             from .camera import BAR_SIZE
 
+            self._channels = {"Red", "Green", "Blue"}
+            self._absorption = False
             self._plot = SpectrumPlot(frame.roi)
             self.mode = "saved"
             self._update_plot(frame)
@@ -233,11 +239,13 @@ class SpectrometerUI:
             self.mode = "saved"
             self._reset_peaks(frame.intensity)
             if self._scale_active:
-                self.buttons = [("Back", pygame.Rect(8, 264, 464, 48), self._review_list)]
+                self._saved_buttons = [("Modes", pygame.Rect(8, 264, 228, 48), self._ask_filter),
+                                       ("Back", pygame.Rect(244, 264, 228, 48), self._review_list)]
+                self.buttons = self._saved_buttons
                 return
             self._saved_buttons = [
                 ("Delete", pygame.Rect(8, 264, 149, 48), self._ask_delete),
-                ("Filter", pygame.Rect(165, 264, 150, 48), self._ask_filter),
+                ("Modes", pygame.Rect(165, 264, 150, 48), self._ask_filter),
                 ("Back", pygame.Rect(323, 264, 149, 48), self._review_list)]
             self.buttons = self._saved_buttons
 
@@ -289,16 +297,16 @@ class SpectrometerUI:
         from .scale import PeakSelection
         self._peaks = PeakSelection(intensity,
                                     self._plot.AREA.move(self.spectrum_rect.topleft),
-                                    self._plot.maximum, self._plot.roi[0])
+                                    self._plot.maximum, self._plot.roi[0], self._absorption)
         self._review_peak_label = None
         self._spectrum_intensity = intensity
 
     def _select_peak(self, position):
         index = self._peaks.select(position)
-        self._peak_message = "No peaks found" if index is None else "Peak at pixel %s" % index
+        self._peak_message = ("No valleys found" if self._absorption else "No peaks found") if index is None else "Pixel %s" % (index)
         if not self._scale_active:
             if index is not None and self._plot.scale is not None:
-                self._peak_message = 'Peak at %.1f nm' % self._plot.scale.wavelength(index)
+                self._peak_message = '%.1f nm' % (self._plot.scale.wavelength(index))
             self._review_peak_label = self._peak_message
             self._redraw = True
             return
@@ -389,22 +397,32 @@ class SpectrometerUI:
     def _back_peak(self):
         self._peak_dialog = False
         self._peaks.selected = None
-        self.buttons = [("Back", pygame.Rect(8, 264, 464, 48), self._review_list)]
+        self.buttons = getattr(self, "_saved_buttons", [("Back", pygame.Rect(8, 264, 464, 48), self._review_list)])
         self._redraw = True
 
     def _ask_filter(self):
         self._filter_dialog = True
-        self.review.message = ""
-        self.buttons = [(name, pygame.Rect(64, 66 + i * 38, 352, 34),
-                         lambda channel=name: self._choose_filter(channel))
-                        for i, name in enumerate(("Red", "Green", "Blue", "All"))]
-        self.buttons.append(("Back", pygame.Rect(64, 224, 352, 48), self._back_filter))
+        self._mode_buttons()
         self._redraw = True
 
+    def _mode_buttons(self):
+        names = ('Red', 'Green', 'Blue', 'Absorption' if self._absorption else 'Emission')
+        self.buttons = [(name, pygame.Rect(64, 66 + i * 38, 352, 34),
+                         lambda channel=name: self._choose_filter(channel))
+                        for i, name in enumerate(names)]
+        self.buttons.append(('Back', pygame.Rect(64, 224, 352, 48), self._back_filter))
+
     def _choose_filter(self, channel):
-        frame = self.review.request_filter(channel)
-        if frame is not None:
-            self._apply_filter(frame)
+        if channel in ('Emission', 'Absorption'):
+            self._absorption = not self._absorption
+            self._reset_peaks(self._spectrum_intensity)
+        else:
+            self._channels.symmetric_difference_update({channel})
+            frame = self.review.request_channels(tuple(name for name in ('Red', 'Green', 'Blue')
+                                                       if name in self._channels))
+            if frame is not None:
+                self._apply_filter(frame)
+        self._mode_buttons()
         self._redraw = True
 
     def _apply_filter(self, frame):
@@ -412,10 +430,9 @@ class SpectrometerUI:
         self._update_plot(frame)
         self._reset_peaks(frame.intensity)
         self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
-        self._back_filter()
+        self._redraw = True
 
     def _back_filter(self):
-        self.review.cancel_filter()
         self._filter_dialog = False
         self.buttons = self._saved_buttons
         self._redraw = True
@@ -630,7 +647,7 @@ class SpectrometerUI:
             surface.blit(shade, (0, 0))
             pygame.draw.rect(surface, PANEL, (48, 28, 384, 260), border_radius=8)
             small = pygame.font.Font(None, 19)
-            title = self.review.message or "Channel filter: " + self.review.filter_channel
+            title = self.review.message or "Modes"
             text = small.render(title[:52], True, TEXT)
             surface.blit(text, text.get_rect(center=(240, 46)))
         if self._keypad_open:
@@ -639,6 +656,8 @@ class SpectrometerUI:
             if not surface.get_clip().colliderect(rect):
                 continue
             color = PRESSED if self._pressed == i else BUTTON
+            if self._filter_dialog and label in ("Red", "Green", "Blue"):
+                color = PRESSED if label in self._channels else BACKGROUND
             pygame.draw.rect(surface, color, rect, border_radius=6)
             text = font.render(label, True, TEXT)
             surface.blit(text, text.get_rect(center=rect.center))

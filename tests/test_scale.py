@@ -12,6 +12,37 @@ from spectrometer.ui import SpectrometerUI
 
 
 class ScaleTests(unittest.TestCase):
+    def test_absorption_plateau_valleys_and_toggle_in_scale(self):
+        np.testing.assert_array_equal(peak_indices([9, 2, 2, 2, 9, 3, 9], absorption=True), [2, 5])
+        ui = SpectrometerUI()
+        try:
+            ui.mode = 'saved'
+            ui._scale_active = True
+            values = np.full(3500, 50000, dtype=np.int32)
+            values[1200] = 10000
+            ui._plot.update(values)
+            ui._reset_peaks(values)
+            ui._saved_buttons = [('Modes', pygame.Rect(8, 264, 228, 48), ui._ask_filter),
+                                 ('Back', pygame.Rect(244, 264, 228, 48), ui._review_list)]
+            ui._ask_filter()
+            ui._choose_filter('Emission')
+            self.assertEqual(ui.buttons[3][0], 'Absorption')
+            self.assertTrue(ui._filter_dialog)
+            np.testing.assert_array_equal(ui._peaks.indices, [1200])
+            ui._back_filter()
+            ui._select_peak(ui._peaks.positions[0])
+            self.assertEqual(ui._peak_message, 'Valley at pixel 1200')
+            self.assertEqual([b[0] for b in ui.buttons], ['Label', 'Back'])
+            ui._back_peak()
+            self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Back'])
+            ui._ask_filter()
+            ui._choose_filter('Absorption')
+            self.assertFalse(ui._absorption)
+            self.assertIsNone(ui._peaks.marker)
+        finally:
+            ui.review.close()
+            ui.settings_view.close()
+
     def test_plateaus_and_flat_spectra(self):
         np.testing.assert_array_equal(peak_indices([0, 2, 2, 2, 0, 3, 0]), [2, 5])
         self.assertEqual(len(peak_indices(np.zeros(3500))), 0)
@@ -50,7 +81,7 @@ class ScaleTests(unittest.TestCase):
                 ui.review.future.result(timeout=5)
                 ui._poll_review()
                 self.assertEqual(ui.mode, 'saved')
-                self.assertEqual([b[0] for b in ui.buttons], ['Back'])
+                self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Back'])
                 position = tuple(ui._peaks.positions[0] + (2, 2))
                 ui._pointer_event('lcd', position, True)
                 ui._pointer_event('lcd', position, False)

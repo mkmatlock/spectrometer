@@ -70,16 +70,47 @@ period and first-frame exposure. Use `--no-camera` for touch-only diagnostics or
 
 ## REST API
 
-The application serves a REST API on port 8000. GET `/capture?name=My%20spectrum`
-saves a named capture and returns only its integer ID (epoch milliseconds).
-GET `/download/<id>` returns the full saved data plus `filename`. Timestamps use ISO
-8601, intensity values are JSON arrays, and binary image data uses base64
-(`raw_camera_output` includes `dtype` and `shape`). Calibration pixel keys are
-JSON strings. Capture returns 409 when the camera is paused or busy, and 503
-when no camera is attached. GET `/list` returns newest-first entries with `id`, `name`,
-and `timestamp` (`YYYY-MM-dd HH:mm:ss`).
-Calibration comes from each saved file. Download returns 404 if the ID is not found. Other API endpoints remain stubs.
-`python3 -m spectrometer.server` runs the API without a camera (capture returns 503).
+The application serves the API at `http://<pi-address>:8000`.
+`python3 -m spectrometer.server` runs only the API, without a camera.
+Spectrum IDs are integer timestamps in milliseconds since the Unix epoch.
+
+### GET /capture?name=<name>
+
+Saves a spectrum locally and returns its ID as a JSON integer after saving.
+Provide one URL-encoded name of 1–64 characters, for example
+`/capture?name=My%20spectrum`.
+
+Returns 400 for an invalid name, 409 when the camera is paused or busy, 503
+when no camera is attached, or 500 on capture failure. A 504 means the request
+timed out; the capture may still finish saving.
+
+### GET /list
+
+Returns a JSON array of saved spectra, newest first. Each entry contains `id`,
+`name`, and `timestamp` formatted as `YYYY-MM-dd HH:mm:ss`. Returns `[]` when
+there are no captures. Older unnamed captures use `Unnamed spectrum`;
+unreadable files are skipped.
+
+### GET /spectrum/<id>
+
+Returns the full saved spectrum as JSON, including `filename`, name, timestamp,
+instrument settings, saved calibration, intensities, sensor area, and image data.
+Timestamps use ISO 8601; intensities are arrays; calibration pixel keys are
+strings. Binary image data uses base64, with `dtype` and `shape` also included
+for `raw_camera_output`. Returns 404 for an unknown ID or 500 if the matching
+spectrum data cannot be returned.
+
+### DELETE /spectrum/<id>
+
+Deletes the corresponding saved file. Returns 204 with an empty body on success,
+404 for an unknown ID, or 500 if deletion fails.
+
+### GET /settings
+
+Returns the current saved configuration as a JSON object with two sections:
+
+- `camera`: `frame_rate`, `resolution`, and `exposure_us` (`null` means automatic).
+- `calibration`: `scale` pixel/value pairs and the `sensor_area` bounding box.
 
 ## Touch diagnostics
 

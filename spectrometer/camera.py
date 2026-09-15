@@ -6,7 +6,7 @@ import logging
 import math
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime
 from pathlib import Path
 
@@ -86,6 +86,7 @@ class CameraStream:
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spectrum-save")
         self._capture_pending = False
         self._capture_busy = False
+        self._api_capture = None
         self._capture_draft = None
         self._defer_save = False
         self._calibration = {'scale': {}, 'sensor_area': self.settings.roi}
@@ -182,6 +183,7 @@ class CameraStream:
                 self._error = exc
                 if capture:
                     self._capture_busy = False
+                    self._fail_api_capture(exc)
 
     def request_capture(self, defer_save=False):
         """Save the next frame; allow only one capture in flight on the Pi Zero."""
@@ -193,6 +195,36 @@ class CameraStream:
             self._capture_pending = self._capture_busy = True
         LOGGER.info("Capture requested")
         return True
+
+    def request_api_capture(self, name):
+        """Reserve the next frame and complete only after its file is saved."""
+        with self._lock:
+            if not self._started or self._capture_busy:
+                return None
+            future = Future()
+            self._api_capture = (name, future)
+            self._defer_save = False
+            self._capture_pending = self._capture_busy = True
+            return future
+
+    def _fail_api_capture(self, error):
+        # Called with the camera lock held.
+        if self._api_capture is not None:
+            _, future = self._api_capture
+            self._api_capture = None
+            future.set_exception(error)
+
+    def _save_api_capture(self, record, future):
+        from .capture import save_capture
+        try:
+            path = save_capture(record, self._capture_directory)
+            future.set_result((path, record))
+        except Exception as exc:
+            future.set_exception(exc)
+        finally:
+            with self._lock:
+                self._api_capture = None
+                self._capture_busy = False
 
     def settings_snapshot(self):
         with self._lock:
@@ -223,15 +255,21 @@ class CameraStream:
                 "spectrum_bar": frame.bar,
                 "spectrum_roi": frame.roi,
             }
-            if self._defer_save:
+            with self._lock:
+                api = self._api_capture
+            if api is not None:
+                record['name'] = api[0]
+                self._writer.submit(self._save_api_capture, record, api[1])
+            elif self._defer_save:
                 with self._lock:
                     self._capture_draft = record
             else:
                 self._writer.submit(self._save_capture, record)
-        except Exception:
+        except Exception as exc:
             LOGGER.exception("Could not prepare spectrum capture")
             with self._lock:
                 self._capture_busy = False
+                self._fail_api_capture(exc)
 
     def take_capture_draft(self):
         with self._lock:
@@ -276,6 +314,7 @@ class CameraStream:
             # Camera callbacks have finished before waiting for the disk writer.
             self._writer.shutdown(wait=True)
             with self._lock:
+                self._fail_api_capture(RuntimeError("Camera closed"))
                 self._capture_pending = self._capture_busy = False
 
     def pause(self):
@@ -285,6 +324,7 @@ class CameraStream:
                 return
             self._started = False
             if self._capture_pending:
+                self._fail_api_capture(RuntimeError('Capture cancelled: camera paused'))
                 self._capture_pending = self._capture_busy = False
                 LOGGER.info("Pending capture cancelled while pausing")
         # Do not hold the lock while stop waits for camera callbacks.

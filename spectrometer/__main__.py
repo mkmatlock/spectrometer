@@ -41,11 +41,12 @@ def main():
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
-    with running_server():
+    camera = None if args.no_camera else CameraStream(settings)
+    with running_server(camera=camera):
         SpectrometerUI(fullscreen=not args.windowed,
                        calibration_settings=deepcopy(store.data['calibration']),
                        on_calibration_changed=lambda values: store.update(calibration=values),
-                       camera=None if args.no_camera else CameraStream(settings)).run()
+                       camera=camera).run()
 
 
 if __name__ == "__main__":

@@ -70,10 +70,13 @@ period and first-frame exposure. Use `--no-camera` for touch-only diagnostics or
 
 ## REST API
 
-The application also serves a REST API on port 8000. GET `/capture`, `/list`,
-`/download/<spectrum_number>` (numeric ID), and `/settings` currently return empty
-JSON results (`[]` for `/list`, `{}` otherwise). POST `/capture` is also supported.
-To run only the API, use `python3 -m spectrometer.server`.
+The application serves a REST API on port 8000. GET `/capture?name=My%20spectrum`
+saves a named capture and returns its data plus `filename`. Timestamps use ISO
+8601, intensity values are JSON arrays, and binary image data uses base64
+(`raw_camera_output` includes `dtype` and `shape`). Calibration pixel keys are
+JSON strings. Capture returns 409 when the camera is paused or busy, and 503
+when no camera is attached. Other API endpoints remain stubs.
+`python3 -m spectrometer.server` runs the API without a camera (capture returns 503).
 
 ## Touch diagnostics
 

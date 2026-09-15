@@ -8,8 +8,7 @@ from spectrometer.server import running_server
 class APITests(unittest.TestCase):
     def test_empty_routes_and_invalid_download(self):
         with running_server('127.0.0.1', 0) as server:
-            for method, path, expected in [('GET', '/capture', {}),
-                                           ('GET', '/list', []),
+            for method, path, expected in [('GET', '/list', []),
                                            ('GET', '/download/123', {}),
                                            ('GET', '/delete/123', {}),
                                            ('GET', '/settings', {})]:

@@ -1,13 +1,15 @@
 from http.client import HTTPConnection
 import json
 import unittest
+import tempfile
 
 from spectrometer.server import running_server
 
 
 class APITests(unittest.TestCase):
     def test_empty_routes_and_invalid_download(self):
-        with running_server('127.0.0.1', 0) as server:
+        with tempfile.TemporaryDirectory() as directory, \
+                running_server('127.0.0.1', 0, capture_directory=directory) as server:
             for method, path, expected in [('GET', '/list', []),
                                            ('GET', '/download/123', {}),
                                            ('GET', '/delete/123', {}),

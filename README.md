@@ -75,7 +75,9 @@ saves a named capture and returns its data plus `filename`. Timestamps use ISO
 8601, intensity values are JSON arrays, and binary image data uses base64
 (`raw_camera_output` includes `dtype` and `shape`). Calibration pixel keys are
 JSON strings. Capture returns 409 when the camera is paused or busy, and 503
-when no camera is attached. Other API endpoints remain stubs.
+when no camera is attached. GET `/list` returns newest-first entries with `id`, `name`,
+and `timestamp` (`YYYY-MM-dd HH:mm:ss`).
+Calibration comes from each saved file. Other API endpoints remain stubs.
 `python3 -m spectrometer.server` runs the API without a camera (capture returns 503).
 
 ## Touch diagnostics

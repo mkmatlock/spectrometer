@@ -3,7 +3,9 @@
 import argparse
 import base64
 from concurrent.futures import TimeoutError
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
+import pickle
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -60,7 +62,32 @@ class APIHandler(BaseHTTPRequestHandler):
             self._respond({'error': 'Capture failed'}, 500)
 
     def list(self):
-        return []
+        from .review import record_calibration
+        result = []
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        for path in self.server.capture_directory.glob('spectrum-*.pkl'):
+            if not path.is_file():
+                continue
+            try:
+                with path.open('rb') as source:
+                    record = pickle.load(source)
+                timestamp = record['timestamp']
+                elapsed = timestamp.astimezone(timezone.utc) - epoch
+                spectrum_id = ((elapsed.days * 86400 + elapsed.seconds) * 1000
+                               + elapsed.microseconds // 1000)
+                name = record.get('name', '')
+                entry = {
+                    'id': spectrum_id,
+                    'name': name.strip() if isinstance(name, str) and name.strip() else 'Unnamed spectrum',
+                    'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                }
+                # Release the full-resolution camera buffer before the next file.
+                del record
+                json.dumps(entry, default=json_value, allow_nan=False)
+                result.append(entry)
+            except Exception:
+                LOGGER.exception('Cannot list spectrum %s', path.name)
+        return sorted(result, key=lambda entry: entry['id'], reverse=True)
 
     def download(self, spectrum_id):
         return {}
@@ -101,10 +128,12 @@ class APIHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def running_server(host='0.0.0.0', port=8000, camera=None):
+def running_server(host='0.0.0.0', port=8000, camera=None, capture_directory=None):
     """Serve alongside the UI, releasing the socket when the application exits."""
     with ThreadingHTTPServer((host, port), APIHandler) as server:
         server.camera = camera
+        server.capture_directory = Path(capture_directory if capture_directory is not None else
+                                        getattr(camera, "_capture_directory", Path.home()))
         worker = threading.Thread(target=server.serve_forever, name='spectrometer-api', daemon=True)
         worker.start()
         LOGGER.info('Spectrometer API listening on %s:%s', *server.server_address)

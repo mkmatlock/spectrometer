@@ -21,8 +21,7 @@ def main():
     logging.basicConfig(level=logging.DEBUG if args.touch_debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.performance_debug:
-        logging.getLogger("spectrometer.camera").setLevel(logging.DEBUG)
-        logging.getLogger("spectrometer.hardware").setLevel(logging.DEBUG)
+        logging.getLogger("spectrometer.performance").setLevel(logging.DEBUG)
 
     from .ui import SpectrometerUI
     from .camera import CameraSettings, CameraStream

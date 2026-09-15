@@ -29,7 +29,7 @@ class CaptureTests(unittest.TestCase):
             np.testing.assert_array_equal(restored["spectrum_intensity"], record["spectrum_intensity"])
             with self.assertRaises(FileExistsError):
                 save_capture(record, directory)
-            self.assertEqual(list(Path(directory).iterdir()), [path])
+            self.assertEqual(list(Path(directory).glob('spectrum-*.pkl')), [path])
 
     def test_failed_write_leaves_no_partial_file(self):
         with tempfile.TemporaryDirectory() as directory, \

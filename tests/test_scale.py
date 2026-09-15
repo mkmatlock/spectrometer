@@ -99,7 +99,7 @@ class ScaleTests(unittest.TestCase):
                 ui._exit_review()
                 self.assertEqual(ui.mode, 'settings')
                 self.assertFalse(ui._scale_active)
-                camera.resume.assert_not_called()
+                camera.request_resume.assert_not_called()
                 self.assertEqual(path.read_bytes(), original)
             finally:
                 ui.review.close()

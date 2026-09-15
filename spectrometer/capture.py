@@ -1,9 +1,13 @@
 """Write complete capture files without overwriting an existing spectrum."""
 
 import os
+import logging
 from pathlib import Path
 import pickle
 import tempfile
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def save_capture(record, directory):
@@ -20,6 +24,13 @@ def save_capture(record, directory):
             output.flush()
             os.fsync(output.fileno())
         os.link(temporary, destination)
+        try:
+            from .catalog import SpectrumCatalog
+            SpectrumCatalog(directory).upsert_record(destination, record)
+        except Exception:
+            # The pickle is authoritative and was already published. A later
+            # reconciliation repairs the rebuildable catalog.
+            LOGGER.exception("Saved %s but could not update its metadata index", destination)
         return destination
     finally:
         if temporary is not None:

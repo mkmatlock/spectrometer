@@ -10,8 +10,11 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime
 from pathlib import Path
 
+from .performance import PerformanceMetrics
+
 
 LOGGER = logging.getLogger(__name__)
+METRICS = PerformanceMetrics('camera')
 SENSOR_SIZE = (4056, 3040)
 SPECTRUM_ROI = (0, 1550, 3500, 1800)  # x0, y0, x1, y1 (exclusive)
 BAR_SIZE = (462, 38)  # Inside the UI's one-pixel border.
@@ -33,7 +36,17 @@ class CameraSettings:
             raise ValueError("Exposure must be a positive number of microseconds")
 
 
-def spectrum_bar(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE):
+def _workspace_array(workspace, name, shape, dtype):
+    import numpy as np
+    if workspace is None:
+        return np.empty(shape, dtype=dtype)
+    value = workspace.get(name)
+    if value is None or value.shape != shape or value.dtype != np.dtype(dtype):
+        value = workspace[name] = np.empty(shape, dtype=dtype)
+    return value
+
+
+def spectrum_bar(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE, workspace=None):
     """Crop full-resolution BGR pixels before resizing and converting to RGB."""
     import cv2
 
@@ -41,8 +54,19 @@ def spectrum_bar(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE):
         raise ValueError(f"Expected a {resolution[0]}x{resolution[1]} three-channel camera frame")
     x0, y0, x1, y1 = roi
     crop = frame[y0:y1, x0:x1]
-    preview = cv2.resize(crop, BAR_SIZE, interpolation=cv2.INTER_AREA)
-    return cv2.cvtColor(preview, cv2.COLOR_BGR2RGB).tobytes()
+    started = time.monotonic()
+    # This is a display-only thumbnail. Linear sampling is substantially less
+    # expensive than area resampling on the Pi Zero and does not affect the
+    # full-resolution grayscale values used or saved as the spectrum.
+    preview = _workspace_array(workspace, 'preview', (BAR_SIZE[1], BAR_SIZE[0], 3), 'uint8')
+    cv2.resize(crop, BAR_SIZE, dst=preview, interpolation=cv2.INTER_LINEAR)
+    METRICS.add('bar_resize_ms', (time.monotonic() - started) * 1000)
+    started = time.monotonic()
+    rgb = _workspace_array(workspace, 'preview_rgb', preview.shape, 'uint8')
+    cv2.cvtColor(preview, cv2.COLOR_BGR2RGB, dst=rgb)
+    result = rgb.tobytes()
+    METRICS.add('bar_convert_ms', (time.monotonic() - started) * 1000)
+    return result
 
 
 @dataclass(frozen=True)
@@ -53,15 +77,22 @@ class SpectrumFrame:
     calibration: dict = field(default_factory=dict)
 
 
-def process_frame(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE):
+def process_frame(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE, workspace=None):
     """Sum grayscale intensity vertically in the original, unscaled ROI."""
     import cv2
 
-    bar = spectrum_bar(frame, roi, resolution)
+    bar = spectrum_bar(frame, roi, resolution, workspace)
     x0, y0, x1, y1 = roi
-    gray = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-    totals = cv2.reduce(gray, 0, cv2.REDUCE_SUM, dtype=cv2.CV_32S).reshape(-1)
-    return SpectrumFrame(bar, totals, tuple(roi))
+    started = time.monotonic()
+    gray = _workspace_array(workspace, 'gray', (y1 - y0, x1 - x0), 'uint8')
+    cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY, dst=gray)
+    METRICS.add('grayscale_ms', (time.monotonic() - started) * 1000)
+    started = time.monotonic()
+    totals = _workspace_array(workspace, 'totals', (1, x1 - x0), 'int32')
+    cv2.reduce(gray, 0, cv2.REDUCE_SUM, dst=totals, dtype=cv2.CV_32S)
+    METRICS.add('reduce_ms', (time.monotonic() - started) * 1000)
+    return SpectrumFrame(bar, totals.reshape(-1).copy() if workspace is not None else totals.reshape(-1),
+                         tuple(roi))
 
 
 class CameraStream:
@@ -80,10 +111,13 @@ class CameraStream:
         self._camera = None
         self._started = False
         self._logged_frame = False
+        self._last_callback = None
+        self._processing_workspace = {}
         self._frame_duration_us = None
         self._exposure_us = self.settings.exposure_us
         self._capture_directory = Path.home() if capture_directory is None else Path(capture_directory)
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spectrum-save")
+        self._lifecycle = ThreadPoolExecutor(max_workers=1, thread_name_prefix="camera-lifecycle")
         self._capture_pending = False
         self._capture_busy = False
         self._api_capture = None
@@ -157,25 +191,36 @@ class CameraStream:
         from picamera2 import MappedArray
 
         started = time.monotonic()
+        previous_callback, self._last_callback = self._last_callback, started
+        if previous_callback is not None:
+            METRICS.add('callback_interval_ms', (started - previous_callback) * 1000)
         timestamp = datetime.now().astimezone()
         with self._lock:
             capture = self._capture_pending
             self._capture_pending = False
         try:
             with MappedArray(request, "main", write=False) as mapped:
-                frame = process_frame(mapped.array, self.settings.roi, self.settings.resolution)
+                frame = process_frame(mapped.array, self.settings.roi, self.settings.resolution,
+                                      self._processing_workspace)
             metadata = request.get_metadata()
             if not self._logged_frame:
                 LOGGER.info("Camera first frame: duration=%s us, exposure=%s us",
                             metadata.get("FrameDuration"), metadata.get("ExposureTime"))
                 self._logged_frame = True
             with self._lock:
+                overwritten = self._latest is not None
                 self._latest = frame
                 self._frame_duration_us = metadata.get("FrameDuration", self._frame_duration_us)
                 self._exposure_us = metadata.get("ExposureTime", self._exposure_us)
             if capture:
                 self._queue_capture(request, frame, timestamp)
-            LOGGER.debug("Camera ROI processing %.1f ms", (time.monotonic() - started) * 1000)
+            METRICS.add('frames')
+            frame_duration = metadata.get('FrameDuration')
+            if isinstance(frame_duration, (int, float)) and frame_duration > 0:
+                METRICS.add('sensor_frame_ms', frame_duration / 1000)
+            if overwritten:
+                METRICS.add('ui_overwrites')
+            METRICS.add('processing_ms', (time.monotonic() - started) * 1000)
         except Exception as exc:
             # Surface callback failures to the UI instead of killing libcamera's
             # event thread and leaving an apparently healthy, frozen preview.
@@ -309,6 +354,9 @@ class CameraStream:
 
     def close(self):
         try:
+            # Apply queued pause/resume requests before taking ownership of the
+            # camera for final shutdown.
+            self._lifecycle.shutdown(wait=True)
             self._close_camera()
         finally:
             # Camera callbacks have finished before waiting for the disk writer.
@@ -319,6 +367,7 @@ class CameraStream:
 
     def pause(self):
         """Stop acquisition; allow an already queued disk write to finish."""
+        started = time.monotonic()
         with self._lock:
             if not self._started:
                 return
@@ -331,7 +380,20 @@ class CameraStream:
         self._camera.stop()
         with self._lock:
             self._latest = None
+        METRICS.add('stop_ms', (time.monotonic() - started) * 1000)
         LOGGER.info("Camera paused")
+
+    def request_pause(self):
+        """Queue a camera stop so a touchscreen handler never blocks on it."""
+        return self._lifecycle.submit(self._lifecycle_call, self.pause)
+
+    def _lifecycle_call(self, action):
+        try:
+            action()
+        except Exception as exc:
+            with self._lock:
+                self._error = exc
+            LOGGER.exception('Camera lifecycle transition failed')
 
     def set_calibration(self, calibration):
         """Own a copy so later UI edits cannot change a queued capture."""
@@ -344,10 +406,33 @@ class CameraStream:
 
     def resume(self):
         """Restart the existing configuration without probing or reallocating."""
-        if self._camera is not None and not self._started:
-            self._camera.start(show_preview=False)
-            self._started = True
+        with self._lock:
+            camera = self._camera
+            stopped = not self._started
+        if camera is not None and stopped:
+            started = time.monotonic()
+            camera.start(show_preview=False)
+            with self._lock:
+                self._started = True
+                self._error = None
+            METRICS.add('start_ms', (time.monotonic() - started) * 1000)
             LOGGER.info("Camera resumed")
+
+    def request_resume(self, capture=False):
+        """Queue a restart, optionally reacquiring a cancelled naming draft."""
+        def restart():
+            self.resume()
+            if capture:
+                self.request_capture(defer_save=True)
+        return self._lifecycle.submit(self._lifecycle_call, restart)
+
+    def request_cancel_capture(self):
+        """Cancel naming safely after any active camera callback, then restart."""
+        def cancel():
+            self.pause()
+            self.discard_capture()
+            self.resume()
+        return self._lifecycle.submit(self._lifecycle_call, cancel)
 
     def _close_camera(self):
         if self._camera is not None:

@@ -9,6 +9,7 @@ import pickle
 import numpy as np
 
 from .camera import BAR_SIZE, PACKED_12_FORMATS, SENSOR_SIZE, SPECTRUM_ROI, SpectrumFrame
+from .catalog import SpectrumCatalog
 
 
 def record_calibration(record):
@@ -95,30 +96,19 @@ def load_channels(path):
     return result
 
 
-def capture_names(paths):
-    result = {}
-    for path in paths:
-        try:
-            with path.open('rb') as source:
-                record = pickle.load(source)
-            name = record.get('name', '')
-            result[path] = name.strip() if isinstance(name, str) and name.strip() else 'Unnamed spectrum'
-            del record
-        except Exception:
-            result[path] = 'Unreadable spectrum'
-    return result
-
-
 class ReviewList:
     ROW_HEIGHT = 42
     VISIBLE = 5
 
     def __init__(self, directory=None):
         self.directory = Path.home() if directory is None else Path(directory)
+        self.catalog = SpectrumCatalog(self.directory)
         self.entries = []
         self.names = {}
+        self.timestamps = {}
         self._names_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='spectrum-names')
         self._names_future = None
+        self._reconcile_queue = []
         self.offset = 0
         self.selected = None
         self.message = ''
@@ -141,6 +131,15 @@ class ReviewList:
                     return datetime.min
             self.entries = sorted((p for p in self.directory.glob('spectrum-*.pkl') if p.is_file()),
                                   key=key, reverse=True)
+            indexed = self.catalog.row_map()
+            self.names = {path: indexed[path.name]['name'] for path in self.entries
+                          if path.name in indexed}
+            self.timestamps = {path: indexed[path.name]['display_timestamp']
+                               for path in self.entries if path.name in indexed}
+            missing = [path for path in self.entries if path not in self.names]
+            visible = set(self.entries[:self.VISIBLE])
+            self._reconcile_queue = ([path for path in missing if path in visible]
+                                     + [path for path in missing if path not in visible])
         except OSError as exc:
             self.entries = []
             self.message = str(exc)
@@ -150,18 +149,36 @@ class ReviewList:
     def poll_names(self):
         changed = False
         if self._names_future is not None and self._names_future.done():
-            self.names.update(self._names_future.result())
+            try:
+                self._names_future.result()
+                indexed = self.catalog.row_map()
+                self.names.update({path: indexed[path.name]['name'] for path in self.entries
+                                   if path.name in indexed})
+                self.timestamps.update({path: indexed[path.name]['display_timestamp']
+                                        for path in self.entries if path.name in indexed})
+            except Exception as exc:
+                self.message = 'Cannot load names: ' + str(exc)
             self._names_future = None
             changed = True
         if self._names_future is None:
-            missing = [path for path in self.entries[self.offset:self.offset + self.VISIBLE]
-                       if path not in self.names]
-            if missing:
-                self._names_future = self._names_executor.submit(capture_names, missing)
+            visible = [path for path in self.entries[self.offset:self.offset + self.VISIBLE]
+                       if path not in self.names and path in self._reconcile_queue]
+            if visible:
+                batch = visible[:1]
+            else:
+                batch = self._reconcile_queue[:1]
+            if batch:
+                chosen = set(batch)
+                self._reconcile_queue = [path for path in self._reconcile_queue
+                                         if path not in chosen]
+                self._names_future = self._names_executor.submit(self.catalog.reconcile_paths, batch)
         return changed
 
     def name(self, path):
         return self.names.get(path, 'Loading name...') if path else 'Unnamed spectrum'
+
+    def timestamp(self, path):
+        return self.timestamps.get(path, '') if path else ''
 
     def scroll(self, rows):
         self.offset = max(0, min(max(0, len(self.entries) - self.VISIBLE), self.offset + rows))
@@ -246,12 +263,14 @@ class ReviewList:
         if self.loaded_path is None:
             self.message = 'No capture is loaded'
             return False
+        path = self.loaded_path
         try:
-            self.loaded_path.unlink()
+            path.unlink()
         except OSError as exc:
             self.message = 'Delete failed: ' + str(exc)
             return False
         self.loaded_path = None
+        self.catalog.remove(path.name)
         offset = self.offset
         self.refresh()
         self.scroll(offset)
@@ -260,3 +279,4 @@ class ReviewList:
     def close(self):
         self._names_executor.shutdown(wait=True, cancel_futures=True)
         self._executor.shutdown(wait=True, cancel_futures=True)
+        self.catalog.close()

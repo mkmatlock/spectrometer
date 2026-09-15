@@ -5,6 +5,7 @@ from pathlib import Path
 import pickle
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -25,16 +26,22 @@ class APIListTests(unittest.TestCase):
                 (Path(directory) / f'spectrum-{i}.pkl').write_bytes(pickle.dumps(record))
             (Path(directory) / 'spectrum-broken.pkl').write_bytes(b'broken')
             (Path(directory) / 'unrelated.pkl').write_bytes(pickle.dumps(records[0]))
-            with running_server('127.0.0.1', 0, capture_directory=directory) as server:
-                connection = HTTPConnection(*server.server_address, timeout=5)
-                try:
-                    with self.assertLogs('spectrometer.server', level='ERROR'):
+            with self.assertLogs('spectrometer.catalog', level='ERROR'):
+                with running_server('127.0.0.1', 0, capture_directory=directory) as server:
+                    connection = HTTPConnection(*server.server_address, timeout=5)
+                    try:
                         connection.request('GET', '/list')
                         response = connection.getresponse()
                         entries = json.loads(response.read())
-                    self.assertEqual(response.status, 200)
-                finally:
-                    connection.close()
+                        self.assertEqual(response.status, 200)
+                        with patch('spectrometer.catalog.pickle.load',
+                                   side_effect=AssertionError('warm /list unpickled a capture')):
+                            connection.request('GET', '/list')
+                            warm = connection.getresponse()
+                            self.assertEqual(warm.status, 200)
+                            self.assertEqual(json.loads(warm.read()), entries)
+                    finally:
+                        connection.close()
             self.assertEqual([entry['id'] for entry in entries], [86400000, 1234, 0])
             self.assertEqual(entries[1], {'id': 1234, 'name': 'Lamp',
                              'timestamp': '1970-01-01 02:00:01'})

@@ -2,10 +2,14 @@
 
 import logging
 import threading
+import time
 import pygame
+
+from .performance import PerformanceMetrics
 
 
 LOGGER = logging.getLogger(__name__)
+METRICS = PerformanceMetrics('ui')
 SCREEN_SIZE = (480, 320)
 BACKGROUND = "#111820"
 PANEL = "#1b2632"
@@ -29,6 +33,7 @@ class SpectrometerUI:
         self.fullscreen = fullscreen
         self.camera = camera
         self._camera_bar = None
+        self._fonts = {}
         from .plot import SpectrumPlot
 
         self._plot = SpectrumPlot()
@@ -96,8 +101,7 @@ class SpectrometerUI:
 
     def _resume_pending_capture(self):
         if self.mode == 'capture' and self._capture_record is None:
-            self.camera.resume()
-            self.camera.request_capture(defer_save=True)
+            self.camera.request_resume(capture=True)
 
     def _capture_keyboard(self):
         self.buttons = []
@@ -139,12 +143,10 @@ class SpectrometerUI:
         self._redraw = True
 
     def _cancel_capture(self):
-        self.camera.pause()
-        self.camera.discard_capture()
+        self.camera.request_cancel_capture()
         self._capture_record = None
         self.mode = 'live'
         self.buttons = self._live_buttons
-        self.camera.resume()
         self._redraw = True
 
     def _poll_capture(self):
@@ -167,19 +169,19 @@ class SpectrometerUI:
         if self._capture_record is None:
             record = self.camera.take_capture_draft()
             if record is not None:
-                self.camera.pause()
+                self.camera.request_pause()
                 self._capture_record = record
                 self._capture_message = 'Name spectrum'
                 self._redraw = True
 
     def _open_settings(self):
-        if self.camera is not None:
-            self.camera.pause()
         snapshot = self.camera.settings_snapshot() if self.camera is not None else {}
         self.settings_view.open(snapshot)
         self.mode = "settings"
         self.buttons = [("Calibrate", pygame.Rect(8, 264, 228, 48), self._calibrate),
                         ("Back", pygame.Rect(244, 264, 228, 48), self._exit_settings)]
+        if self.camera is not None:
+            self.camera.request_pause()
         self._redraw = True
 
     def _ask_shutdown(self):
@@ -191,14 +193,14 @@ class SpectrometerUI:
         self.buttons = [('Yes', pygame.Rect(64, 168, 172, 48), self._confirm_shutdown),
                         ('No', pygame.Rect(244, 168, 172, 48), self._cancel_shutdown)]
         if self.camera is not None:
-            self.camera.pause()
+            self.camera.request_pause()
         self._redraw = True
 
     def _cancel_shutdown(self):
         self.mode, self.buttons = self._shutdown_view
         self._resume_pending_capture()
         if self.camera is not None and self.mode == 'live':
-            self.camera.resume()
+            self.camera.request_resume()
         self._redraw = True
 
     def _confirm_shutdown(self):
@@ -250,7 +252,7 @@ class SpectrometerUI:
         self.mode = "live"
         self.buttons = self._live_buttons
         if self.camera is not None:
-            self.camera.resume()
+            self.camera.request_resume()
         self._redraw = True
 
     def _poll_settings(self):
@@ -258,11 +260,11 @@ class SpectrometerUI:
             self._redraw = True
 
     def _open_review(self):
-        if self.camera is not None:
-            self.camera.pause()
         self._live_view = (self._plot, self._camera_bar)
         self.review.refresh()
         self._review_list()
+        if self.camera is not None:
+            self.camera.request_pause()
 
     def _review_list(self):
         self._peak_dialog = False
@@ -291,7 +293,7 @@ class SpectrometerUI:
         self.buttons = self._live_buttons
         self._plot, self._camera_bar = self._live_view
         if self.camera is not None:
-            self.camera.resume()
+            self.camera.request_resume()
         self._redraw = True
 
     def _poll_review(self):
@@ -716,14 +718,14 @@ class SpectrometerUI:
         if self.mode in ("live", "saved") and self._camera_bar is not None:
             surface.blit(self._camera_bar, self.camera_slice_rect.move(1, 1))
         if self.mode in ('saved', 'sensor'):
-            small = pygame.font.Font(None, 18)
+            small = self._font(18)
             # Reserve the right side for a touched peak's position.
             rect = pygame.Rect(16, 12, 300, 18)
             pygame.draw.rect(surface, PANEL, rect)
             text = self._fit_text(small, self.review.name(self.review.loaded_path), rect.width)
             surface.blit(text, rect.topleft)
         if self.mode == "saved" and not self._scale_active and self._review_peak_label:
-            small = pygame.font.Font(None, 18)
+            small = self._font(18)
             text = small.render(self._review_peak_label, True, "#ffd166")
             surface.blit(text, text.get_rect(topright=(self.spectrum_rect.right - 8,
                                                       self.spectrum_rect.top + 5)))
@@ -740,7 +742,7 @@ class SpectrometerUI:
                 # Keep the plot and selected peak unobscured above the dialog.
                 pygame.draw.rect(surface, PANEL, (48, 200, 384, 112), border_radius=8)
                 pygame.draw.rect(surface, BORDER, (48, 200, 384, 112), 1, border_radius=8)
-                small = pygame.font.Font(None, 20)
+                small = self._font(20)
                 text = small.render(self._peak_message, True, TEXT)
                 surface.blit(text, text.get_rect(center=(240, 224)))
         if self._delete_dialog:
@@ -755,7 +757,7 @@ class SpectrometerUI:
             pygame.draw.rect(surface, BORDER, (48, 88, 384, 144), 1, border_radius=8)
             text = font.render(self._delete_message, True, TEXT)
             surface.blit(text, text.get_rect(center=(240, 114)))
-            small = pygame.font.Font(None, 18)
+            small = self._font(18)
             name = self.review.loaded_path.name if self.review.loaded_path else ""
             text = small.render(name, True, MUTED)
             surface.blit(text, text.get_rect(center=(240, 142)))
@@ -770,7 +772,7 @@ class SpectrometerUI:
             shade.fill((0, 0, 0, 160))
             surface.blit(shade, (0, 0))
             pygame.draw.rect(surface, PANEL, (48, 28, 384, 260), border_radius=8)
-            small = pygame.font.Font(None, 19)
+            small = self._font(19)
             title = self.review.message or "Modes"
             text = small.render(title[:52], True, TEXT)
             surface.blit(text, text.get_rect(center=(240, 46)))
@@ -792,17 +794,17 @@ class SpectrometerUI:
         surface.blit(shade, (0, 0))
         pygame.draw.rect(surface, PANEL, (108, 8, 264, 304), border_radius=8)
         pygame.draw.rect(surface, BORDER, (108, 8, 264, 304), 1, border_radius=8)
-        small = pygame.font.Font(None, 19)
+        small = self._font(19)
         title = self._label_error or "Label pixel %s" % self._label_pixel
         text = small.render(title, True, TEXT)
         surface.blit(text, text.get_rect(center=(240, 22)))
         pygame.draw.rect(surface, BACKGROUND, (120, 36, 240, 32), border_radius=4)
-        text = pygame.font.Font(None, 26).render(self._label_input or "0", True, TEXT)
+        text = self._font(26).render(self._label_input or "0", True, TEXT)
         surface.blit(text, text.get_rect(midright=(352, 52)))
 
     def _draw_peak_labels(self, surface):
         area = self._plot.AREA.move(self.spectrum_rect.topleft)
-        font = pygame.font.Font(None, 18)
+        font = self._font(18)
         occupied = []
         for sensor_pixel, value in sorted(self.calibration_settings["scale"].items()):
             pixel = sensor_pixel - self._plot.roi[0]
@@ -832,7 +834,7 @@ class SpectrometerUI:
         surface.blit(shade, (0, 0))
         pygame.draw.rect(surface, PANEL, (48, 32, 384, 256), border_radius=8)
         pygame.draw.rect(surface, BORDER, (48, 32, 384, 256), 1, border_radius=8)
-        small = pygame.font.Font(None, 20)
+        small = self._font(20)
         text = small.render(self._calibration_message, True, TEXT)
         surface.blit(text, text.get_rect(center=(240, 56)))
         for i, (name, rect) in enumerate(self._calibration_rows):
@@ -849,8 +851,14 @@ class SpectrometerUI:
             text = value + '...' if value else ''
         return font.render(text, True, TEXT)
 
+    def _font(self, size):
+        font = self._fonts.get(size)
+        if font is None:
+            font = self._fonts[size] = pygame.font.Font(None, size)
+        return font
+
     def _draw_review(self, surface, font):
-        small = pygame.font.Font(None, 19)
+        small = self._font(19)
         header = self.review.message or ("Review captures" if self.review.entries else "No captures found")
         if self._scale_active and not self.review.message and self.review.entries:
             header = "Scale calibration: select a capture"
@@ -861,12 +869,13 @@ class SpectrometerUI:
             index = row + self.review.offset
             rect = pygame.Rect(8, 34 + row * 42, 450, 40)
             pygame.draw.rect(surface, BUTTON if index == self.review.selected else PANEL, rect)
-            date = path.stem.removeprefix('spectrum-')
-            try:
-                from datetime import datetime
-                date = datetime.strptime(date, '%Y-%m-%d-%H-%M-%S').strftime('%Y-%m-%d %H:%M:%S')
-            except ValueError:
-                pass
+            date = self.review.timestamp(path) or path.stem.removeprefix('spectrum-')
+            if not self.review.timestamp(path):
+                try:
+                    from datetime import datetime
+                    date = datetime.strptime(date, '%Y-%m-%d-%H-%M-%S').strftime('%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    pass
             date_text = small.render(date, True, MUTED)
             date_rect = date_text.get_rect(midright=(rect.right - 8, rect.centery))
             surface.blit(date_text, date_rect)
@@ -878,7 +887,7 @@ class SpectrometerUI:
             pygame.draw.rect(surface, MUTED, (464, y, 6, height))
 
     def _draw_settings(self, surface, font):
-        small = pygame.font.Font(None, 19)
+        small = self._font(19)
         title = self.settings_view.message or "Settings"
         surface.blit(small.render(title, True, TEXT), (8, 10))
         for index, (name, value) in enumerate(self.settings_view.rows):
@@ -905,6 +914,11 @@ class SpectrometerUI:
             self.review.close()
             self.settings_view.close()
 
+    def _timed_draw(self, surface, font):
+        started = time.monotonic()
+        self.draw(surface, font)
+        METRICS.add('draw_ms', (time.monotonic() - started) * 1000)
+
     def _poll_camera(self):
         if self.camera is None or self.mode != "live":
             return False
@@ -915,6 +929,7 @@ class SpectrometerUI:
 
         self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
         self._update_plot(frame)
+        METRICS.add('camera_frames')
         return True
 
     def _run_lcd(self):
@@ -933,12 +948,13 @@ class SpectrometerUI:
                     # Off-screen rendering needs no SDL window, X server, or DRM.
                     pygame.font.init()
                     surface = pygame.Surface(SCREEN_SIZE)
-                    font = pygame.font.Font(None, 22)
-                    self.draw(surface, font)
+                    font = self._font(22)
+                    self._timed_draw(surface, font)
                     hardware.present(surface)
                     last_position = None
                     active = True
                     while not stopping.is_set():
+                        iteration_started = time.monotonic()
                         power = hardware.power_event()
                         if power in ('short', 'hold') and self.mode != 'shutdown':
                             active = True if power == 'hold' else not active
@@ -953,12 +969,12 @@ class SpectrometerUI:
                             if not active:
                                 hardware.set_screen_active(False)
                                 if self.camera is not None:
-                                    self.camera.pause()
+                                    self.camera.request_pause()
                             else:
                                 self._resume_pending_capture()
                                 if self.camera is not None and self.mode == "live":
-                                    self.camera.resume()
-                                self.draw(surface, font)
+                                    self.camera.request_resume()
+                                self._timed_draw(surface, font)
                                 hardware.present(surface)
                                 hardware.set_screen_active(True)
                             LOGGER.info("Application %s", "active" if active else "paused")
@@ -981,7 +997,7 @@ class SpectrometerUI:
                         self._poll_review()
                         self._poll_settings()
                         if self._redraw:
-                            self.draw(surface, font)
+                            self._timed_draw(surface, font)
                             hardware.present(surface)
                             self._redraw = False
                         elif previous != self._pressed or new_frame:
@@ -996,10 +1012,12 @@ class SpectrometerUI:
                             # Clip drawing and transfer only changed pixels.
                             for rect in regions:
                                 surface.set_clip(rect)
-                                self.draw(surface, font)
+                                self._timed_draw(surface, font)
                             surface.set_clip(None)
                             hardware.present(surface, regions)
-                        stopping.wait(0.02)
+                        elapsed = time.monotonic() - iteration_started
+                        METRICS.add('loop_ms', elapsed * 1000)
+                        stopping.wait(max(0, 0.02 - elapsed))
         finally:
             self._pointer = self._pressed = None
             pygame.quit()
@@ -1013,8 +1031,8 @@ class SpectrometerUI:
             surface = pygame.display.set_mode(SCREEN_SIZE, flags)
             pygame.display.set_caption("Spectrometer")
             pygame.mouse.set_visible(not self.fullscreen)
-            font = pygame.font.Font(None, 22)
-            self.draw(surface, font)
+            font = self._font(22)
+            self._timed_draw(surface, font)
             pygame.display.flip()
             while True:
                 # Block while idle instead of continuously repainting the SPI LCD.
@@ -1039,7 +1057,7 @@ class SpectrometerUI:
                 if self._redraw or new_frame or previous != self._pressed or event.type in (
                     pygame.WINDOWEXPOSED, pygame.WINDOWSHOWN
                 ):
-                    self.draw(surface, font)
+                    self._timed_draw(surface, font)
                     pygame.display.flip()
                     self._redraw = False
         finally:

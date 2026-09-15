@@ -17,13 +17,15 @@ class ReviewNameTests(unittest.TestCase):
             review = ReviewList(directory)
             try:
                 review.refresh()
-                review.poll_names()
-                review._names_future.result(timeout=5)
-                self.assertTrue(review.poll_names())
+                changes = 0
+                while review._reconcile_queue or review._names_future is not None:
+                    review.poll_names()
+                    review._names_future.result(timeout=5)
+                    changes += bool(review.poll_names())
+                self.assertEqual(changes, 4)
                 self.assertEqual([review.name(p) for p in review.entries],
                                  ['Unreadable spectrum', 'Unnamed spectrum',
                                   'Unnamed spectrum', 'Lamp spectrum'])
-                review.poll_names()
                 self.assertIsNone(review._names_future)
             finally:
                 review.close()

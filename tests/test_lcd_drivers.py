@@ -39,7 +39,7 @@ class DriverTests(unittest.TestCase):
                     0, 0, size[0] - 1, size[1] - 1, int(size[0] == 480))
                 lcd.SPI.writebytes2.assert_called_once()
                 data = lcd.SPI.writebytes2.call_args.args[0]
-                self.assertIsInstance(data, bytes)
+                data = bytes(data)
                 self.assertEqual(len(data), 480 * 320 * 2)
                 left = b'\x00\x1f' if size[0] == 480 else b'\x07\xe0'
                 right = b'\x07\xe0' if size[0] == 480 else b'\x00\x1f'
@@ -73,9 +73,41 @@ class DriverTests(unittest.TestCase):
         patch.putpixel((1, 0), (0, 0, 255))
         lcd.show_region(10, 217, patch)
         lcd.set_windows.assert_called_once_with(468, 217, 469, 217, 1)
-        lcd.SPI.writebytes2.assert_called_once_with(b'\x00\x1f\xf8\x00')
+        self.assertEqual(bytes(lcd.SPI.writebytes2.call_args.args[0]), b'\x00\x1f\xf8\x00')
         with self.assertRaises(ValueError):
             lcd.show_region(479, 0, patch)
+
+    def test_direct_rgb_region_has_same_position_and_pixel_order(self):
+        lcd = self.lcd_class.__new__(self.lcd_class)
+        lcd.width, lcd.height, lcd.np = 320, 480, numpy
+        lcd.command, lcd.data, lcd.set_windows = Mock(), Mock(), Mock()
+        lcd.digital_write, lcd.GPIO_DC_PIN, lcd.SPI = Mock(), Mock(), Mock()
+        lcd.show_region_rgb(10, 217, 2, 1, b'\xff\x00\x00\x00\x00\xff')
+        lcd.set_windows.assert_called_once_with(468, 217, 469, 217, 1)
+        self.assertEqual(bytes(lcd.SPI.writebytes2.call_args.args[0]), b'\x00\x1f\xf8\x00')
+
+    def test_strided_rgb_view_can_be_packed_without_a_copy(self):
+        lcd = self.lcd_class.__new__(self.lcd_class)
+        lcd.width, lcd.height, lcd.np = 320, 480, numpy
+        lcd.command, lcd.data, lcd.set_windows = Mock(), Mock(), Mock()
+        lcd.digital_write, lcd.GPIO_DC_PIN, lcd.SPI = Mock(), Mock(), Mock()
+        source = numpy.zeros((4, 3, 3), numpy.uint8)
+        source[1, 0], source[1, 2] = (255, 0, 0), (0, 0, 255)
+        view = source[1:2, ::2]
+        lcd.show_region_array(10, 217, 2, 1, view)
+        self.assertEqual(bytes(lcd.SPI.writebytes2.call_args.args[0]), b'\x00\x1f\xf8\x00')
+
+    def test_window_coordinates_are_batched_and_cached(self):
+        lcd = self.lcd_class.__new__(self.lcd_class)
+        lcd.GPIO_DC_PIN = Mock()
+        lcd.digital_write, lcd.spi_writebyte = Mock(), Mock()
+        lcd._window_x = lcd._window_y = None
+        lcd.set_windows(9, 36, 470, 165, 1)
+        self.assertEqual(lcd.spi_writebyte.call_count, 5)
+        lcd.set_windows(9, 36, 470, 165, 1)
+        self.assertEqual(lcd.spi_writebyte.call_count, 6)  # RAM write command only.
+        lcd.set_windows(9, 217, 470, 254, 1)
+        self.assertEqual(lcd.spi_writebyte.call_count, 9)  # New Y plus RAM write.
 
     def test_touch_event_flags_and_short_read(self):
         touch = self.touch_class.__new__(self.touch_class)

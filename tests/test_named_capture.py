@@ -55,6 +55,7 @@ class NamedCaptureTests(unittest.TestCase):
                     else:
                         ui._cancel_capture()
                         self.assertEqual(list(Path(directory).glob('*.pkl')), [])
+                    camera._lifecycle.submit(lambda: None).result(timeout=1)
                     self.assertEqual(ui.mode, 'live')
                     self.assertFalse(camera._capture_busy)
                 finally:

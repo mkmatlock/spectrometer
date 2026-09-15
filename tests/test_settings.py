@@ -39,8 +39,8 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(ui.mode, 'settings')
             ui.buttons[1][2]()
             self.assertEqual(ui.mode, 'live')
-            camera.pause.assert_called_once_with()
-            camera.resume.assert_called_once_with()
+            camera.request_pause.assert_called_once_with()
+            camera.request_resume.assert_called_once_with()
         finally:
             ui.review.close()
             ui.settings_view.close()

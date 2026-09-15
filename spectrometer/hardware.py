@@ -2,10 +2,15 @@
 
 from contextlib import ExitStack
 import logging
+import queue
+import threading
 import time
+
+from .performance import PerformanceMetrics
 
 
 LOGGER = logging.getLogger(__name__)
+METRICS = PerformanceMetrics('lcd')
 
 
 class LCDBackend:
@@ -16,6 +21,7 @@ class LCDBackend:
         self._power_down = False
         self._power_started = None
         self._power_held = False
+        self._present_error = None
 
     def __enter__(self):
         from .st7796 import st7796
@@ -25,6 +31,13 @@ class LCDBackend:
         try:
             self.display = st7796()
             self._resources.callback(self.display.close)
+            self._present_queue = queue.Queue(maxsize=1)
+            self._present_error = None
+            self._present_stop = object()
+            self._present_thread = threading.Thread(target=self._present_worker,
+                                                    name='lcd-present', daemon=True)
+            self._present_thread.start()
+            self._resources.callback(self._stop_presenter)
             self.touch = ft6336u()
             self._resources.callback(self.touch.close)
             from gpiozero import Button
@@ -60,28 +73,86 @@ class LCDBackend:
     def set_screen_active(self, active):
         self.display.bl_DutyCycle(100 if active else 0)
 
-    def present(self, surface, regions=None):
-        import pygame
-        from PIL import Image
+    @staticmethod
+    def _merge_regions(first, second, full_rect):
+        if first is None or second is None:
+            return None
+        result = []
+        for rect in (*first, *second):
+            clipped = rect.clip(full_rect)
+            if clipped.width and clipped.height and clipped not in result:
+                result.append(clipped)
+        return result
 
-        started = time.monotonic()
-        patches = [surface.get_rect()] if regions is None else regions
-        pixels = 0
-        for rect in patches:
+    def _prepare(self, surface, regions):
+        import pygame
+        rects = [surface.get_rect()] if regions is None else list(regions)
+        patches = []
+        for rect in rects:
             patch = surface.subsurface(rect)
-            image = Image.frombytes("RGB", patch.get_size(),
-                                    pygame.image.tostring(patch, "RGB"))
-            if regions is None:
-                self.display.show_image(image)
+            width, height = patch.get_size()
+            rgb = pygame.surfarray.pixels3d(patch).swapaxes(0, 1)
+            try:
+                pixels = self.display.prepare_array(width, height, rgb, mirror=True)
+            finally:
+                del rgb
+            patches.append((rect.x, rect.y, width, height, pixels, regions is None))
+        return patches
+
+    def _present_worker(self):
+        while True:
+            task = self._present_queue.get()
+            try:
+                if task is self._present_stop:
+                    return
+                _, patches = task
+                for patch in patches:
+                    self.display.write_prepared(*patch)
+            except Exception as exc:
+                self._present_error = exc
+                LOGGER.exception('LCD presentation failed')
+            finally:
+                self._present_queue.task_done()
+
+    def _stop_presenter(self):
+        self._present_queue.join()
+        self._present_queue.put(self._present_stop)
+        self._present_thread.join()
+
+    def _queue_present(self, surface, regions):
+        wanted = None if regions is None else list(regions)
+        while True:
+            try:
+                old_regions, _ = self._present_queue.get_nowait()
+            except queue.Empty:
+                break
             else:
-                self.display.show_region(rect.x, rect.y, image)
-            pixels += rect.width * rect.height
-        LOGGER.debug("LCD transfer %s pixels in %.1f ms", pixels,
-                     (time.monotonic() - started) * 1000)
+                self._present_queue.task_done()
+                wanted = self._merge_regions(old_regions, wanted, surface.get_rect())
+        patches = self._prepare(surface, wanted)
+        self._present_queue.put_nowait((wanted, patches))
+
+    def present(self, surface, regions=None):
+        started = time.monotonic()
+        if self._present_error is not None:
+            raise RuntimeError('LCD presentation failed') from self._present_error
+        pixels = sum(rect.width * rect.height for rect in
+                     ([surface.get_rect()] if regions is None else regions))
+        if hasattr(self, '_present_queue'):
+            self._queue_present(surface, regions)
+        else:
+            # Tests and simple direct use without entering the hardware context.
+            for patch in self._prepare(surface, regions):
+                self.display.write_prepared(*patch)
+        elapsed_ms = (time.monotonic() - started) * 1000
+        METRICS.add('transfer_ms', elapsed_ms)
+        METRICS.add('pixels', pixels)
 
     def read_touch(self):
+        started = time.monotonic()
         self.touch.read_touch_data()
         count, coordinates = self.touch.get_touch_xy()
+        METRICS.add('touch_read_ms', (time.monotonic() - started) * 1000)
         if not count:
             if self._last_touch is not None:
                 LOGGER.debug("Touch released")

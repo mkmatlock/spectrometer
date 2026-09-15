@@ -4,16 +4,19 @@ import argparse
 from copy import deepcopy
 import base64
 from concurrent.futures import TimeoutError
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 import pickle
 from contextlib import contextmanager
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import re
 import threading
 from urllib.parse import urlsplit, parse_qs
+
+from .catalog import DuplicateSpectrumID, SpectrumCatalog, timestamp_id
 
 
 LOGGER = logging.getLogger(__name__)
@@ -27,11 +30,6 @@ def json_value(value):
     if hasattr(value, 'tolist'):
         return value.tolist()
     raise TypeError(f'Cannot encode {type(value).__name__}')
-
-
-def timestamp_id(timestamp):
-    elapsed = timestamp.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
-    return (elapsed.days * 86400 + elapsed.seconds) * 1000 + elapsed.microseconds // 1000
 
 
 def spectrum_response(path, record):
@@ -73,68 +71,56 @@ class APIHandler(BaseHTTPRequestHandler):
             self._respond({'error': 'Capture failed'}, 500)
 
     def list(self):
-        from .review import record_calibration
-        result = []
-        for path in self.server.capture_directory.glob('spectrum-*.pkl'):
-            if not path.is_file():
-                continue
-            try:
-                with path.open('rb') as source:
-                    record = pickle.load(source)
-                timestamp = record['timestamp']
-                spectrum_id = timestamp_id(timestamp)
-                name = record.get('name', '')
-                entry = {
-                    'id': spectrum_id,
-                    'name': name.strip() if isinstance(name, str) and name.strip() else 'Unnamed spectrum',
-                    'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                }
-                # Release the full-resolution camera buffer before the next file.
-                del record
-                json.dumps(entry, default=json_value, allow_nan=False)
-                result.append(entry)
-            except Exception:
-                LOGGER.exception('Cannot list spectrum %s', path.name)
-        return sorted(result, key=lambda entry: entry['id'], reverse=True)
+        return self.server.catalog.list_api()
 
     def _find_spectrum(self, spectrum_id):
-        wanted = int(spectrum_id)
-        for path in self.server.capture_directory.glob('spectrum-*.pkl'):
-            if not path.is_file():
-                continue
-            try:
-                with path.open('rb') as source:
-                    record = pickle.load(source)
-                matches = timestamp_id(record['timestamp']) == wanted
-            except Exception:
-                LOGGER.exception('Cannot read spectrum %s', path.name)
-                continue
-            if not matches:
-                del record
-                continue
-            return path, record
-        return None
+        path = self.server.catalog.find(spectrum_id)
+        if path is None:
+            return None
+        try:
+            with path.open('rb') as source:
+                return path, pickle.load(source)
+        except FileNotFoundError:
+            self.server.catalog.remove(path.name)
+            return None
 
     def spectrum(self, spectrum_id):
-        found = self._find_spectrum(spectrum_id)
-        if found is None:
-            self._respond({'error': 'Spectrum not found'}, 404)
+        if not self.server.raw_slots.acquire(blocking=False):
+            self._respond({'error': 'Another spectrum transfer is in progress'}, 503)
             return
-        path, record = found
         try:
-            self._respond(spectrum_response(path, record))
-        except (BrokenPipeError, ConnectionResetError):
-            LOGGER.info('Client disconnected during download')
-        except Exception:
-            LOGGER.exception('Cannot read spectrum %s', path.name)
-            self._respond({'error': 'Cannot read spectrum data'}, 500)
+            try:
+                found = self._find_spectrum(spectrum_id)
+            except DuplicateSpectrumID:
+                self._respond({'error': 'Spectrum ID is ambiguous'}, 409)
+                return
+            except Exception:
+                LOGGER.exception('Cannot load spectrum %s', spectrum_id)
+                self._respond({'error': 'Cannot read spectrum data'}, 500)
+                return
+            if found is None:
+                self._respond({'error': 'Spectrum not found'}, 404)
+                return
+            path, record = found
+            try:
+                self._respond(spectrum_response(path, record))
+            except (BrokenPipeError, ConnectionResetError):
+                LOGGER.info('Client disconnected during download')
+            except Exception:
+                LOGGER.exception('Cannot read spectrum %s', path.name)
+                self._respond({'error': 'Cannot read spectrum data'}, 500)
+        finally:
+            self.server.raw_slots.release()
 
     def delete_spectrum(self, spectrum_id):
-        found = self._find_spectrum(spectrum_id)
-        if found is None:
+        try:
+            path = self.server.catalog.find(spectrum_id)
+        except DuplicateSpectrumID:
+            self._respond({'error': 'Spectrum ID is ambiguous'}, 409)
+            return
+        if path is None:
             self._respond({'error': 'Spectrum not found'}, 404)
             return
-        path, _ = found
         try:
             path.unlink()
         except FileNotFoundError:
@@ -143,6 +129,7 @@ class APIHandler(BaseHTTPRequestHandler):
             LOGGER.exception('Cannot delete spectrum %s', path.name)
             self._respond({'error': 'Cannot delete spectrum'}, 500)
         else:
+            self.server.catalog.remove(path.name)
             self.send_response(204)
             self.end_headers()
 
@@ -172,7 +159,11 @@ class APIHandler(BaseHTTPRequestHandler):
         endpoints = {'/list': self.list,
                      '/settings': self.settings}
         if path in endpoints:
-            self._respond(endpoints[path]())
+            try:
+                self._respond(endpoints[path]())
+            except Exception:
+                LOGGER.exception('API request failed for %s', path)
+                self._respond({'error': 'Request failed'}, 500)
         elif match := re.fullmatch(r'/spectrum/([0-9]+)', path):
             self.spectrum(match.group(1))
         else:
@@ -197,14 +188,50 @@ def running_server(host='0.0.0.0', port=8000, camera=None, capture_directory=Non
         server.camera = camera
         server.capture_directory = Path(capture_directory if capture_directory is not None else
                                         getattr(camera, "_capture_directory", Path.home()))
+        server.catalog = SpectrumCatalog(server.capture_directory, persistent=True)
+        # Complete legacy discovery before accepting requests. Thereafter the
+        # request path is a metadata-only SQLite query.
+        server.catalog.reconcile_all()
+        # Fault the small catalog and JSON encoder into memory before the
+        # full-resolution camera begins consuming the single CPU.
+        json.dumps(server.catalog.list_api())
+        server.raw_slots = threading.BoundedSemaphore(1)
+        reconcile_stop = threading.Event()
+
+        def reconcile_catalog():
+            while not reconcile_stop.wait(30):
+                try:
+                    server.catalog.reconcile_all()
+                except Exception:
+                    LOGGER.exception('Background spectrum reconciliation failed')
+
+        reconciler = threading.Thread(target=reconcile_catalog, name='spectrum-catalog', daemon=True)
+        reconciler.start()
         worker = threading.Thread(target=server.serve_forever, name='spectrometer-api', daemon=True)
         worker.start()
+        # Prime ThreadingHTTPServer's first handler thread before camera work
+        # saturates the Pi Zero. Later external clients avoid a one-off delay.
+        warm_host = '127.0.0.1' if server.server_address[0] in ('', '0.0.0.0') else server.server_address[0]
+        connection = HTTPConnection(warm_host, server.server_address[1], timeout=5)
+        try:
+            connection.request('GET', '/list')
+            response = connection.getresponse()
+            response.read()
+            if response.status != 200:
+                LOGGER.warning('API warmup returned HTTP %s', response.status)
+        except OSError:
+            LOGGER.exception('API warmup failed')
+        finally:
+            connection.close()
         LOGGER.info('Spectrometer API listening on %s:%s', *server.server_address)
         try:
             yield server
         finally:
             server.shutdown()
             worker.join()
+            reconcile_stop.set()
+            reconciler.join()
+            server.catalog.close()
 
 
 def main():

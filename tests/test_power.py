@@ -1,4 +1,5 @@
 import unittest
+import threading
 from unittest.mock import MagicMock, Mock, patch
 
 from spectrometer.camera import CameraStream
@@ -52,7 +53,7 @@ class PowerTests(unittest.TestCase):
             ui.run()
             run.assert_not_called()
         self.assertEqual(ui.mode, 'shutdown')
-        camera.resume.assert_not_called()
+        camera.request_resume.assert_not_called()
         self.assertEqual([c.args[0] for c in hardware.set_screen_active.call_args_list], [False, True])
 
     def test_short_release_hold_threshold_and_no_repeat(self):
@@ -89,6 +90,32 @@ class PowerTests(unittest.TestCase):
         finally:
             stream.close()
 
+    def test_requested_lifecycle_transitions_do_not_block_caller(self):
+        stream = CameraStream()
+        camera = stream._camera = Mock()
+        stream._started = True
+        stopping = threading.Event()
+        release = threading.Event()
+
+        def slow_stop():
+            stopping.set()
+            release.wait(2)
+
+        camera.stop.side_effect = slow_stop
+        try:
+            paused = stream.request_pause()
+            self.assertTrue(stopping.wait(1))
+            self.assertFalse(paused.done())
+            resumed = stream.request_resume()
+            self.assertFalse(resumed.done())
+            release.set()
+            paused.result(timeout=1)
+            resumed.result(timeout=1)
+            camera.start.assert_called_once_with(show_preview=False)
+            self.assertTrue(stream._started)
+        finally:
+            stream.close()
+
     def test_paused_ui_skips_touch_camera_and_drawing_until_wake(self):
         camera = MagicMock()
         camera.poll.return_value = None
@@ -102,8 +129,8 @@ class PowerTests(unittest.TestCase):
                 patch("spectrometer.ui.threading.Event", return_value=stopping):
             factory.return_value.__enter__.return_value = hardware
             ui.run()
-        camera.pause.assert_called_once_with()
-        camera.resume.assert_called_once_with()
+        camera.request_pause.assert_called_once_with()
+        camera.request_resume.assert_called_once_with()
         camera.poll.assert_called_once_with()
         hardware.read_touch.assert_called_once_with()
         self.assertEqual(hardware.present.call_count, 2)  # Initial draw and wake.

@@ -2,6 +2,9 @@
 
 import unittest
 import sys
+import queue
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -70,11 +73,46 @@ class LCDUITests(unittest.TestCase):
         backend.display = Mock()
         surface = pygame.Surface((480, 320))
         surface.fill((255, 0, 0))
+        backend.display.prepare_array.return_value = bytes(480 * 320 * 2)
         backend.present(surface)
-        image = backend.display.show_image.call_args.args[0]
-        self.assertEqual(image.size, (480, 320))
-        self.assertEqual(image.mode, "RGB")
-        self.assertEqual(image.getpixel((479, 319)), (255, 0, 0))
+        width, height, pixels = backend.display.prepare_array.call_args.args[:3]
+        self.assertEqual((width, height), (480, 320))
+        self.assertEqual(pixels.shape, (320, 480, 3))
+        self.assertEqual(tuple(pixels[-1, -1]), (255, 0, 0))
+        backend.display.write_prepared.assert_called_once()
+
+    def test_slow_spi_worker_does_not_block_present_caller(self):
+        backend = LCDBackend()
+        backend.display = Mock()
+        backend.display.prepare_array.return_value = bytes(480 * 320 * 2)
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_write(*_):
+            entered.set()
+            release.wait(1)
+
+        backend.display.write_prepared.side_effect = slow_write
+        backend._present_queue = queue.Queue(maxsize=1)
+        backend._present_error = None
+        backend._present_stop = object()
+        backend._present_thread = threading.Thread(target=backend._present_worker)
+        backend._present_thread.start()
+        try:
+            started = time.monotonic()
+            surface = pygame.Surface((480, 320))
+            backend.present(surface)
+            self.assertLess(time.monotonic() - started, 0.1)
+            self.assertTrue(entered.wait(1))
+            first = pygame.Rect(8, 264, 149, 48)
+            second = pygame.Rect(323, 264, 149, 48)
+            backend.present(surface, [first])
+            backend.present(surface, [second])
+        finally:
+            release.set()
+            backend._stop_presenter()
+        writes = backend.display.write_prepared.call_args_list
+        self.assertEqual([(call.args[0], call.args[1]) for call in writes],
+                         [(0, 0), first.topleft, second.topleft])
 
     def test_hardware_loop_press_hold_release_and_cleanup(self):
         callback = Mock()

@@ -103,7 +103,7 @@ class ReviewTests(unittest.TestCase):
             try:
                 original = ui._plot
                 ui._open_review()
-                camera.pause.assert_called_once()
+                camera.request_pause.assert_called_once()
                 self.assertFalse(ui._poll_camera())
                 camera.poll.assert_not_called()
                 ui._pointer_event('lcd', (50, 50), True)
@@ -120,7 +120,7 @@ class ReviewTests(unittest.TestCase):
                 ui.buttons[1][2]()
                 self.assertEqual(ui.mode, 'live')
                 self.assertIs(ui._plot, original)
-                camera.resume.assert_called_once()
+                camera.request_resume.assert_called_once()
             finally:
                 ui.review.close()
 

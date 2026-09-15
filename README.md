@@ -46,8 +46,8 @@ I2C bus pins. Wiring must match these assignments. Do not run another display
 service or framebuffer driver that owns the same SPI device or GPIO pins.
 
 
-Rendering uses Pygame software surfaces and Pillow to pass RGB images to the
-LCD driver's RGB565 conversion. Camera acquisition starts by default. Use Raspberry
+Rendering passes Pygame RGB buffers directly to the LCD driver's RGB565
+conversion. Camera acquisition starts by default. Use Raspberry
 Pi OS Bookworm or later and install the updated dependencies with `setup.sh`.
 Stop any separate camera server before starting this app; only one process can
 own the camera.
@@ -90,6 +90,9 @@ Returns a JSON array of saved spectra, newest first. Each entry contains `id`,
 `name`, and `timestamp` formatted as `YYYY-MM-dd HH:mm:ss`. Returns `[]` when
 there are no captures. Older unnamed captures use `Unnamed spectrum`;
 unreadable files are skipped.
+Metadata is kept in a rebuildable `.spectrometer_index.sqlite3` catalog beside
+the captures. Existing captures are read once when first indexed; later lists do
+not deserialize their raw camera images.
 
 ### GET /spectrum/<id>
 
@@ -99,6 +102,8 @@ Timestamps use ISO 8601; intensities are arrays; calibration pixel keys are
 strings. Binary image data uses base64, with `dtype` and `shape` also included
 for `raw_camera_output`. Returns 404 for an unknown ID or 500 if the matching
 spectrum data cannot be returned.
+Only one full-spectrum transfer is processed at a time; another concurrent
+transfer returns 503 to protect memory on the Pi Zero.
 
 ### DELETE /spectrum/<id>
 
@@ -119,6 +124,9 @@ python3 -m spectrometer --touch-debug
 ```
 
 Touch and release each button. Logs show raw controller coordinates, mapped UI coordinates, releases, and placeholder button actions. Button centers are approximately `(82, 288)`, `(240, 288)`, and `(397, 288)`. If there are no touch logs, the controller is not reporting contacts; if mapped coordinates miss these locations, the panel needs a different coordinate mapping. Exit with Ctrl+C, then run `sudo systemctl start spectrometer` to restore the service.
+
+Use `python3 -m spectrometer --performance-debug` to report rolling camera,
+rendering, LCD, and metadata timings every five seconds without per-frame logs.
 
 ## Power button
 

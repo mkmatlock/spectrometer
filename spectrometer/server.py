@@ -34,7 +34,7 @@ def timestamp_id(timestamp):
 
 
 def spectrum_response(path, record):
-    """Shared JSON representation for newly captured and saved spectra."""
+    """Full JSON representation of a saved spectrum."""
     result = dict(record, filename=path.name)
     raw = record['raw_camera_output']
     result['raw_camera_output'] = {
@@ -61,8 +61,8 @@ class APIHandler(BaseHTTPRequestHandler):
             self._respond({'error': 'Camera paused or capture busy'}, 409)
             return
         try:
-            path, record = future.result(timeout=120)
-            self._respond(spectrum_response(path, record))
+            _, record = future.result(timeout=120)
+            self._respond(timestamp_id(record["timestamp"]))
         except TimeoutError:
             self._respond({'error': 'Capture timed out; it may still finish saving'}, 504)
         except (BrokenPipeError, ConnectionResetError):

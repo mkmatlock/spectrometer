@@ -44,9 +44,11 @@ class DownloadTests(unittest.TestCase):
                 server.camera = None
                 _, entries = get('/list')
                 self.assertEqual(entries[0]['id'], 1234)
-                status, downloaded = get('/download/1234')
+                self.assertEqual(captured, entries[0]['id'])
+                status, downloaded = get(f'/download/{captured}')
                 self.assertEqual(status, 200)
-                self.assertEqual(downloaded, captured)
+                self.assertEqual(downloaded['filename'], path.name)
+                self.assertEqual(downloaded['name'], 'Lamp')
                 self.assertEqual(base64.b64decode(downloaded['raw_camera_output']['data']), bytes([1, 2, 255]))
                 self.assertEqual(downloaded['spectrum_intensity'], [123, 456])
                 self.assertEqual(downloaded['instrument_settings']['calibration_settings']['scale'], {'1': 500})

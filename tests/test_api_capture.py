@@ -1,4 +1,3 @@
-import base64
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from http.client import HTTPConnection
@@ -26,7 +25,7 @@ class APICaptureTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_capture_saves_and_returns_same_named_data(self):
+    def test_capture_saves_and_returns_only_integer_id(self):
         with tempfile.TemporaryDirectory() as directory:
             camera = CameraStream(capture_directory=directory)
             camera._started = True
@@ -52,13 +51,13 @@ class APICaptureTests(unittest.TestCase):
                         running_server('127.0.0.1', 0, camera) as server:
                     status, data = self.get(server, '/capture?name=Test%20lamp')
                 self.assertEqual(status, 200)
-                record = pickle.loads((Path(directory) / data['filename']).read_bytes())
-                self.assertEqual(record['name'], data['name'])
-                self.assertEqual(data['name'], 'Test lamp')
-                self.assertEqual(data['spectrum_intensity'], record['spectrum_intensity'].tolist())
-                self.assertEqual(base64.b64decode(data['raw_camera_output']['data']), record['raw_camera_output'].tobytes())
-                self.assertEqual(data['raw_camera_output']['shape'], [1, 3])
-                self.assertEqual(data['instrument_settings']['calibration_settings']['scale'], {'100': 700, '200': 500})
+                self.assertIs(type(data), int)
+                self.assertEqual(data, 1789344000000)
+                record = pickle.loads(next(Path(directory).glob('spectrum-*.pkl')).read_bytes())
+                self.assertEqual(record['name'], 'Test lamp')
+                np.testing.assert_array_equal(record['spectrum_intensity'], [10, 20])
+                np.testing.assert_array_equal(record['raw_camera_output'], [[1, 2, 3]])
+                self.assertEqual(record['instrument_settings']['calibration_settings']['scale'], {100: 700, 200: 500})
             finally:
                 worker.join()
                 camera.close()

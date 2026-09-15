@@ -11,7 +11,6 @@ class APITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 running_server('127.0.0.1', 0, capture_directory=directory) as server:
             for method, path, expected in [('GET', '/list', []),
-                                           ('GET', '/download/123', {}),
                                            ('GET', '/delete/123', {}),
                                            ('GET', '/settings', {})]:
                 with self.subTest(method=method, path=path):
@@ -24,7 +23,7 @@ class APITests(unittest.TestCase):
                         self.assertEqual(json.loads(response.read()), expected)
                     finally:
                         connection.close()
-            for path in ('/download/not-a-number', '/download/1/extra', '/unknown'):
+            for path in ('/download/123', '/download/not-a-number', '/download/1/extra', '/unknown'):
                 connection = HTTPConnection(*server.server_address, timeout=2)
                 try:
                     connection.request('GET', path)

@@ -28,6 +28,21 @@ def json_value(value):
     raise TypeError(f'Cannot encode {type(value).__name__}')
 
 
+def timestamp_id(timestamp):
+    elapsed = timestamp.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return (elapsed.days * 86400 + elapsed.seconds) * 1000 + elapsed.microseconds // 1000
+
+
+def spectrum_response(path, record):
+    """Shared JSON representation for newly captured and saved spectra."""
+    result = dict(record, filename=path.name)
+    raw = record['raw_camera_output']
+    result['raw_camera_output'] = {
+        'encoding': 'base64', 'dtype': str(raw.dtype), 'shape': list(raw.shape),
+        'data': base64.b64encode(raw.tobytes()).decode('ascii')}
+    return result
+
+
 class APIHandler(BaseHTTPRequestHandler):
     timeout = 10
 
@@ -47,12 +62,7 @@ class APIHandler(BaseHTTPRequestHandler):
             return
         try:
             path, record = future.result(timeout=120)
-            result = dict(record, filename=path.name)
-            raw = record['raw_camera_output']
-            result['raw_camera_output'] = {
-                'encoding': 'base64', 'dtype': str(raw.dtype), 'shape': list(raw.shape),
-                'data': base64.b64encode(raw.tobytes()).decode('ascii')}
-            self._respond(result)
+            self._respond(spectrum_response(path, record))
         except TimeoutError:
             self._respond({'error': 'Capture timed out; it may still finish saving'}, 504)
         except (BrokenPipeError, ConnectionResetError):
@@ -64,7 +74,6 @@ class APIHandler(BaseHTTPRequestHandler):
     def list(self):
         from .review import record_calibration
         result = []
-        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
         for path in self.server.capture_directory.glob('spectrum-*.pkl'):
             if not path.is_file():
                 continue
@@ -72,9 +81,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 with path.open('rb') as source:
                     record = pickle.load(source)
                 timestamp = record['timestamp']
-                elapsed = timestamp.astimezone(timezone.utc) - epoch
-                spectrum_id = ((elapsed.days * 86400 + elapsed.seconds) * 1000
-                               + elapsed.microseconds // 1000)
+                spectrum_id = timestamp_id(timestamp)
                 name = record.get('name', '')
                 entry = {
                     'id': spectrum_id,
@@ -90,7 +97,29 @@ class APIHandler(BaseHTTPRequestHandler):
         return sorted(result, key=lambda entry: entry['id'], reverse=True)
 
     def download(self, spectrum_id):
-        return {}
+        wanted = int(spectrum_id)
+        for path in self.server.capture_directory.glob('spectrum-*.pkl'):
+            if not path.is_file():
+                continue
+            try:
+                with path.open('rb') as source:
+                    record = pickle.load(source)
+                matches = timestamp_id(record['timestamp']) == wanted
+            except Exception:
+                LOGGER.exception('Cannot read spectrum %s', path.name)
+                continue
+            if not matches:
+                del record
+                continue
+            try:
+                self._respond(spectrum_response(path, record))
+            except (BrokenPipeError, ConnectionResetError):
+                LOGGER.info('Client disconnected during download')
+            except Exception:
+                LOGGER.exception('Cannot download spectrum %s', path.name)
+                self._respond({'error': 'Cannot read spectrum data'}, 500)
+            return
+        self._respond({'error': 'Spectrum not found'}, 404)
     
     def delete(self, spectrum_id):
         return {}
@@ -117,7 +146,7 @@ class APIHandler(BaseHTTPRequestHandler):
         if path in endpoints:
             self._respond(endpoints[path]())
         elif match := re.fullmatch(r'/download/([0-9]+)', path):
-            self._respond(self.download(match.group(1)))
+            self.download(match.group(1))
         elif match := re.fullmatch(r'/delete/([0-9]+)', path):
             self._respond(self.delete(match.group(1)))
         else:

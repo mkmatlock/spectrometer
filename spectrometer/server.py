@@ -96,7 +96,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 LOGGER.exception('Cannot list spectrum %s', path.name)
         return sorted(result, key=lambda entry: entry['id'], reverse=True)
 
-    def download(self, spectrum_id):
+    def _find_spectrum(self, spectrum_id):
         wanted = int(spectrum_id)
         for path in self.server.capture_directory.glob('spectrum-*.pkl'):
             if not path.is_file():
@@ -111,18 +111,39 @@ class APIHandler(BaseHTTPRequestHandler):
             if not matches:
                 del record
                 continue
-            try:
-                self._respond(spectrum_response(path, record))
-            except (BrokenPipeError, ConnectionResetError):
-                LOGGER.info('Client disconnected during download')
-            except Exception:
-                LOGGER.exception('Cannot download spectrum %s', path.name)
-                self._respond({'error': 'Cannot read spectrum data'}, 500)
+            return path, record
+        return None
+
+    def spectrum(self, spectrum_id):
+        found = self._find_spectrum(spectrum_id)
+        if found is None:
+            self._respond({'error': 'Spectrum not found'}, 404)
             return
-        self._respond({'error': 'Spectrum not found'}, 404)
-    
-    def delete(self, spectrum_id):
-        return {}
+        path, record = found
+        try:
+            self._respond(spectrum_response(path, record))
+        except (BrokenPipeError, ConnectionResetError):
+            LOGGER.info('Client disconnected during download')
+        except Exception:
+            LOGGER.exception('Cannot read spectrum %s', path.name)
+            self._respond({'error': 'Cannot read spectrum data'}, 500)
+
+    def delete_spectrum(self, spectrum_id):
+        found = self._find_spectrum(spectrum_id)
+        if found is None:
+            self._respond({'error': 'Spectrum not found'}, 404)
+            return
+        path, _ = found
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            self._respond({'error': 'Spectrum not found'}, 404)
+        except OSError:
+            LOGGER.exception('Cannot delete spectrum %s', path.name)
+            self._respond({'error': 'Cannot delete spectrum'}, 500)
+        else:
+            self.send_response(204)
+            self.end_headers()
 
     def settings(self):
         return {}
@@ -145,10 +166,15 @@ class APIHandler(BaseHTTPRequestHandler):
                      '/settings': self.settings}
         if path in endpoints:
             self._respond(endpoints[path]())
-        elif match := re.fullmatch(r'/download/([0-9]+)', path):
-            self.download(match.group(1))
-        elif match := re.fullmatch(r'/delete/([0-9]+)', path):
-            self._respond(self.delete(match.group(1)))
+        elif match := re.fullmatch(r'/spectrum/([0-9]+)', path):
+            self.spectrum(match.group(1))
+        else:
+            self._respond({'error': 'Not found'}, 404)
+
+    def do_DELETE(self):
+        path = urlsplit(self.path).path
+        if match := re.fullmatch(r'/spectrum/([0-9]+)', path):
+            self.delete_spectrum(match.group(1))
         else:
             self._respond({'error': 'Not found'}, 404)
 

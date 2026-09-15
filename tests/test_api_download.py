@@ -45,13 +45,13 @@ class DownloadTests(unittest.TestCase):
                 _, entries = get('/list')
                 self.assertEqual(entries[0]['id'], 1234)
                 self.assertEqual(captured, entries[0]['id'])
-                status, downloaded = get(f'/download/{captured}')
+                status, downloaded = get(f'/spectrum/{captured}')
                 self.assertEqual(status, 200)
                 self.assertEqual(downloaded['filename'], path.name)
                 self.assertEqual(downloaded['name'], 'Lamp')
                 self.assertEqual(base64.b64decode(downloaded['raw_camera_output']['data']), bytes([1, 2, 255]))
                 self.assertEqual(downloaded['spectrum_intensity'], [123, 456])
                 self.assertEqual(downloaded['instrument_settings']['calibration_settings']['scale'], {'1': 500})
-                for route in ('/download/1000', '/download/1235', '/download/../../etc/passwd'):
+                for route in ('/spectrum/1000', '/spectrum/1235', '/spectrum/../../etc/passwd'):
                     self.assertEqual(get(route)[0], 404)
             self.assertEqual(path.read_bytes(), original)

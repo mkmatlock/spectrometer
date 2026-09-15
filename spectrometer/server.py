@@ -1,6 +1,7 @@
 """Spectrometer REST API with named capture; other endpoints remain stubs."""
 
 import argparse
+from copy import deepcopy
 import base64
 from concurrent.futures import TimeoutError
 from datetime import datetime, timezone
@@ -146,7 +147,13 @@ class APIHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def settings(self):
-        return {}
+        from .config import SettingsStore
+        store = self.server.settings_store
+        if store is None:
+            # Standalone API reads the same persistent configuration as the UI.
+            store = SettingsStore()
+        return deepcopy(store.data)
+
 
     def _respond(self, result, status=200):
         data = json.dumps(result, default=json_value).encode('utf-8')
@@ -183,9 +190,10 @@ class APIHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def running_server(host='0.0.0.0', port=8000, camera=None, capture_directory=None):
+def running_server(host='0.0.0.0', port=8000, camera=None, capture_directory=None, settings_store=None):
     """Serve alongside the UI, releasing the socket when the application exits."""
     with ThreadingHTTPServer((host, port), APIHandler) as server:
+        server.settings_store = settings_store
         server.camera = camera
         server.capture_directory = Path(capture_directory if capture_directory is not None else
                                         getattr(camera, "_capture_directory", Path.home()))

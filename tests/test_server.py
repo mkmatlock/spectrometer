@@ -10,8 +10,7 @@ class APITests(unittest.TestCase):
     def test_empty_routes_and_invalid_download(self):
         with tempfile.TemporaryDirectory() as directory, \
                 running_server('127.0.0.1', 0, capture_directory=directory) as server:
-            for method, path, expected in [('GET', '/list', []),
-                                           ('GET', '/settings', {})]:
+            for method, path, expected in [('GET', '/list', [])]:
                 with self.subTest(method=method, path=path):
                     connection = HTTPConnection(*server.server_address, timeout=2)
                     try:

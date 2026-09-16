@@ -35,3 +35,36 @@ def save_capture(record, directory):
     finally:
         if temporary is not None:
             temporary.unlink()
+
+
+def rename_capture(path, name):
+    """Atomically replace only the display name, preserving spectrum identity."""
+    path = Path(path)
+    name = name.strip()
+    if not name:
+        raise ValueError('Enter a name')
+    with path.open('rb') as source:
+        record = pickle.load(source)
+    record['name'] = name
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.spectrum-', delete=False) as output:
+            temporary = Path(output.name)
+            pickle.dump(record, output, protocol=pickle.HIGHEST_PROTOCOL)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        try:
+            from .catalog import SpectrumCatalog
+            catalog = SpectrumCatalog(path.parent)
+            try:
+                catalog.upsert_record(path, record)
+            finally:
+                catalog.close()
+        except Exception:
+            LOGGER.exception('Renamed %s but could not update its metadata index', path)
+        return name
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

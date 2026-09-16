@@ -117,7 +117,7 @@ class ReviewTests(unittest.TestCase):
                 ui.buttons[2][2]()
                 self.assertEqual(ui.mode, 'review')
                 self.assertEqual(ui.review.selected, 0)
-                ui.buttons[1][2]()
+                ui.buttons[2][2]()
                 self.assertEqual(ui.mode, 'live')
                 self.assertIs(ui._plot, original)
                 camera.request_resume.assert_called_once()

@@ -141,10 +141,14 @@ class SpectrometerUI:
                 self.buttons.append((label, pygame.Rect(round(left), 66 + row * 48, width, 44),
                                      lambda value=action: self._capture_key(value)))
                 left += unit * weight + 4
-        self.buttons.extend([('Accept', pygame.Rect(8, 264, 228, 48), self._accept_capture),
-                             ('Cancel', pygame.Rect(244, 264, 228, 48), self._cancel_capture)])
+        self.buttons.extend([('Accept', pygame.Rect(8, 264, 228, 48),
+                              self._accept_rename if self.mode == 'rename' else self._accept_capture),
+                             ('Cancel', pygame.Rect(244, 264, 228, 48),
+                              self._cancel_rename if self.mode == 'rename' else self._cancel_capture)])
 
     def _capture_key(self, key):
+        if self.mode == "rename" and not self._rename_ready:
+            return
         if key == 'Shift':
             self._capture_upper = not self._capture_upper
             self._capture_keyboard()
@@ -173,6 +177,9 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_capture(self):
+        if self.mode == 'rename':
+            self._poll_rename()
+            return
         if self.mode != 'capture':
             return
         if self._capture_save is not None:
@@ -413,8 +420,68 @@ class SpectrometerUI:
         self._blackbody = False
         self._blackbody_label = None
         self.mode = "review"
-        self.buttons = [("Display", pygame.Rect(8, 264, 228, 48), self._display_capture),
-                        ("Back", pygame.Rect(244, 264, 228, 48), self._exit_review)]
+        self.buttons = [("Display", pygame.Rect(8, 264, 149, 48), self._display_capture),
+                        ("Rename", pygame.Rect(165, 264, 150, 48), self._rename_spectrum),
+                        ("Back", pygame.Rect(323, 264, 149, 48), self._exit_review)]
+        self._redraw = True
+
+    def _rename_spectrum(self):
+        if self.review.future is not None:
+            return
+        if self.review.selected is None:
+            self.review.message = 'Select a capture first'
+            self._redraw = True
+            return
+        self._rename_path = self.review.entries[self.review.selected]
+        self.mode = 'rename'
+        self._capture_name = ''
+        self._capture_upper = False
+        self._capture_message = 'Loading name...'
+        self._rename_saving = False
+        self._rename_ready = False
+        self._rename_future = self.review.read_name(self._rename_path)
+        self._capture_keyboard()
+        self._redraw = True
+
+    def _accept_rename(self):
+        if not self._rename_ready or self._rename_future is not None:
+            return
+        if not self._capture_name.strip():
+            self._capture_message = 'Enter a name'
+        else:
+            self._rename_saving = True
+            self._rename_future = self.review.rename(self._rename_path, self._capture_name.strip())
+            self._capture_message = 'Saving...'
+            self.buttons = []
+        self._redraw = True
+
+    def _cancel_rename(self):
+        if self._rename_saving and self._rename_future is not None:
+            return
+        if self._rename_future is not None:
+            self._rename_future.cancel()
+            self._rename_future = None
+        self.review.message = ''
+        self._review_list()
+
+    def _poll_rename(self):
+        if self._rename_future is None or not self._rename_future.done():
+            return
+        future, self._rename_future = self._rename_future, None
+        try:
+            name = future.result()
+        except Exception:
+            LOGGER.exception('Could not rename spectrum')
+            self._capture_message = 'Save failed. Retry or cancel.' if self._rename_saving else 'Cannot load spectrum'
+            self._capture_keyboard()
+        else:
+            if self._rename_saving:
+                self.review.names[self._rename_path] = name
+                self._cancel_rename()
+            else:
+                self._capture_name = name
+                self._rename_ready = True
+                self._capture_message = 'Rename spectrum'
         self._redraw = True
 
     def _exit_review(self):
@@ -876,7 +943,7 @@ class SpectrometerUI:
 
     def _pointer_event(self, pointer, position, down):
         """Shared button handling for desktop events and polled hardware touch."""
-        if self.mode in ('shutdown', 'capture'):
+        if self.mode in ('shutdown', 'capture', 'rename'):
             if down and self._pointer is None:
                 self._pointer = pointer
                 self._pressed = self._button_at(position)
@@ -983,7 +1050,7 @@ class SpectrometerUI:
     def draw(self, surface, font):
         """Draw cached spectrum axes, trace, camera slice, and touch controls."""
         surface.fill(BACKGROUND)
-        if self.mode == "capture":
+        if self.mode in ("capture", "rename"):
             text = font.render(self._capture_message, True, TEXT)
             surface.blit(text, (10, 5))
             pygame.draw.rect(surface, PANEL, (8, 28, 464, 30))
@@ -1426,7 +1493,7 @@ class SpectrometerUI:
                 event = pygame.event.wait(20) if (self.camera is not None or self.review.future is not None
                                                 or self.settings_view.future is not None
                                                 or self.review.filter_future is not None
-                                                or self.mode in ("review", "saved", "sensor", "channel")) else pygame.event.wait()
+                                                or self.mode in ("review", "saved", "sensor", "channel", "rename")) else pygame.event.wait()
                 if event.type == pygame.QUIT or (
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
                 ):

@@ -191,6 +191,19 @@ class ReviewList:
                 self._names_future = self._names_executor.submit(self.catalog.reconcile_paths, batch)
         return changed
 
+    def rename(self, path, name):
+        from .capture import rename_capture
+        # Serialize with metadata indexing so a stale indexing job cannot
+        # overwrite the newly saved name.
+        return self._names_executor.submit(rename_capture, path, name)
+
+    def read_name(self, path):
+        def read():
+            from .catalog import display_name
+            with path.open('rb') as source:
+                return display_name(pickle.load(source))
+        return self._names_executor.submit(read)
+
     def name(self, path):
         return self.names.get(path, 'Loading name...') if path else 'Unnamed spectrum'
 

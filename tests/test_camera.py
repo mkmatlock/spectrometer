@@ -127,6 +127,32 @@ class CameraTests(unittest.TestCase):
                 camera.start.assert_not_called()
                 camera.close.assert_called_once_with()
 
+    def test_sensor_preview_bypasses_averaging_and_blocks_capture(self):
+        stream = CameraStream(CameraSettings(resolution=(640, 480), roi=(0, 0, 640, 20)))
+        self.addCleanup(stream.close)
+        stream._sensor_preview_enabled = True
+        stream._started = True
+        stream._camera = Mock()
+        pixels = np.full((480, 640, 3), (10, 20, 30), np.uint8)
+        mapped = Mock()
+        mapped.__enter__ = Mock(return_value=SimpleNamespace(array=pixels))
+        mapped.__exit__ = Mock(return_value=False)
+        with patch.dict(sys.modules, {'picamera2': SimpleNamespace(MappedArray=lambda *a, **k: mapped)}), \
+                patch('spectrometer.camera.process_frame') as process:
+            stream._on_frame(Mock())
+            process.assert_not_called()
+        preview, size, resolution = stream.poll_sensor_preview()
+        self.assertEqual(tuple(preview[:3]), (30, 20, 10))
+        self.assertEqual(size, (341, 256))
+        self.assertEqual(resolution, (640, 480))
+        self.assertIsNone(stream.poll_sensor_preview())
+        self.assertFalse(stream.request_capture())
+        self.assertIsNone(stream.request_api_capture('test'))
+        stream.request_end_sensor_preview((0, 10, 640, 30)).result(timeout=2)
+        self.assertFalse(stream._sensor_preview_enabled)
+        self.assertFalse(stream._started)
+        self.assertEqual(stream.settings.roi, (0, 10, 640, 30))
+
     def test_crop_and_colour_order(self):
         frame = np.zeros((3040, 4056, 3), dtype=np.uint8)
         frame[:] = (0, 255, 0)  # Outside the ROI must not appear.

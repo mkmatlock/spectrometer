@@ -60,6 +60,7 @@ class SpectrometerUI:
         self._mode_message = ''
         self._sensor_active = False
         self._sensor = None
+        self._sensor_paused = False
         self._peak_dialog = False
         self._peak_touch = None
         self._peaks = None
@@ -222,7 +223,7 @@ class SpectrometerUI:
     def _cancel_shutdown(self):
         self.mode, self.buttons = self._shutdown_view
         self._resume_pending_capture()
-        if self.camera is not None and self.mode == 'live':
+        if self.camera is not None and (self.mode == 'live' or (self.mode == 'sensor' and not self._sensor_paused)):
             self.camera.request_resume()
         self._redraw = True
 
@@ -259,6 +260,9 @@ class SpectrometerUI:
                 self._sensor_active = name == "Sensor"
                 self._channel_active = name == "Channel"
                 self._live_view = (self._plot, self._camera_bar)
+                if name == "Sensor":
+                    self._open_sensor()
+                    return
                 self.review.refresh()
                 self._review_list()
                 return
@@ -477,15 +481,6 @@ class SpectrometerUI:
                     ('Cancel', pygame.Rect(323, 272, 149, 40), self._exit_review)]
                 self._redraw = True
                 return
-            if self._sensor_active:
-                from .sensor import SensorSelection
-                from .camera import SPECTRUM_ROI
-                self._sensor = SensorSelection(frame, self.calibration_settings.get('sensor_area', SPECTRUM_ROI))
-                self.mode = 'sensor'
-                self.buttons = [("Accept", pygame.Rect(8, 264, 149, 48), self._accept_sensor),
-                                ("Reset", pygame.Rect(165, 264, 150, 48), self._reset_sensor),
-                                ("Cancel", pygame.Rect(323, 264, 149, 48), self._exit_review)]
-                return
             from .plot import SpectrumPlot
             from .camera import BAR_SIZE
 
@@ -515,11 +510,52 @@ class SpectrometerUI:
         if self._channel_active:
             from .review import load_channels
             self.review.display(load_channels)
-        elif self._sensor_active:
-            from .sensor import load_sensor
-            self.review.display(load_sensor)
         else:
             self.review.display()
+
+    def _open_sensor(self):
+        from .camera import CameraSettings
+        from .config import DEFAULTS
+        if self.camera is None:
+            self._sensor_active = False
+            self.mode = 'settings'
+            self.buttons = self._settings_buttons
+            self.settings_view.message = 'Camera unavailable'
+            self._redraw = True
+            return
+        self.mode = 'sensor'
+        self._sensor = None
+        self._sensor_paused = False
+        settings = CameraSettings(**self._camera_settings, roi=tuple(
+            self.calibration_settings.get('sensor_area', DEFAULTS['calibration']['sensor_area'])))
+        self.camera.request_sensor_preview(settings)
+        self._sensor_buttons()
+        self._redraw = True
+
+    def _sensor_buttons(self):
+        self.buttons = [('Accept', pygame.Rect(8, 264, 149, 48), self._accept_sensor),
+                        ('Resume' if self._sensor_paused else 'Pause',
+                         pygame.Rect(165, 264, 150, 48), self._toggle_sensor_pause),
+                        ('Cancel', pygame.Rect(323, 264, 149, 48), self._cancel_sensor)]
+
+    def _toggle_sensor_pause(self):
+        if self._sensor is None:
+            return
+        self._sensor_paused = not self._sensor_paused
+        self._sensor.start = None
+        if self._sensor_paused:
+            self.camera.request_pause()
+        else:
+            self.camera.poll_sensor_preview()  # Discard any frame queued during stop.
+            self.camera.request_resume()
+        self._sensor_buttons()
+        self._redraw = True
+
+    def _cancel_sensor(self):
+        from .config import DEFAULTS
+        roi = self.calibration_settings.get('sensor_area', DEFAULTS['calibration']['sensor_area'])
+        self.camera.request_end_sensor_preview(roi)
+        self._exit_review()
 
     def _reset_channel(self):
         self._channel.reset()
@@ -546,6 +582,8 @@ class SpectrometerUI:
         self._exit_review()
 
     def _accept_sensor(self):
+        if self._sensor is None:
+            return
         from .config import DEFAULTS, validate
         roi = self._sensor.roi
         updated = dict(self.calibration_settings, sensor_area=roi)
@@ -567,16 +605,8 @@ class SpectrometerUI:
             return
         self.calibration_settings.update(updated)
         if self.camera is not None:
-            self.camera.set_roi(roi)
             self.camera.set_calibration(self.calibration_settings)
-        self._exit_review()
-
-    def _reset_sensor(self):
-        width, height = self._sensor.resolution
-        self._sensor.roi = (0, 0, width, height)
-        self._sensor.start = None
-        self._sensor.message = ''
-        self._redraw = True
+        self._cancel_sensor()
 
     def _update_plot(self, frame):
         from .plot import SpectrumPlot
@@ -801,7 +831,8 @@ class SpectrometerUI:
         if self.mode == 'channel' and self._pointer == pointer and self._channel.dragging is not None:
             self._channel.drag(position)
             self._redraw = True
-        if self.mode == 'sensor' and self._pointer == pointer and self._sensor.start is not None:
+        if (self.mode == 'sensor' and self._sensor is not None and self._sensor_paused
+                and self._pointer == pointer and self._sensor.start is not None):
             self._sensor.drag(position)
             self._redraw = True
         if self.mode == "review" and self._pointer == pointer and self._list_start is not None:
@@ -871,7 +902,8 @@ class SpectrometerUI:
                     (i for i in range(4) if self._settings_row_rect(i).collidepoint(position)), None)
             if self.mode == 'channel' and self._channel.start(position):
                 self._redraw = True
-            if self.mode == 'sensor' and self._sensor.rect.collidepoint(position):
+            if (self.mode == 'sensor' and self._sensor is not None and self._sensor_paused
+                    and self._sensor.rect.collidepoint(position)):
                 self._sensor.start = self._sensor.point(position)
             if (self.mode == "saved" and self._peaks is not None
                     and not (self._peak_dialog or self._filter_dialog or self._delete_dialog)
@@ -910,7 +942,7 @@ class SpectrometerUI:
                 self._pointer = self._pressed = None
                 self._redraw = True
                 return
-            if self.mode == 'sensor' and self._sensor.start is not None:
+            if self.mode == 'sensor' and self._sensor is not None and self._sensor.start is not None:
                 if self._sensor.point(position) != self._sensor.start:
                     self._sensor.drag(position)
                 self._sensor.start = None
@@ -989,7 +1021,10 @@ class SpectrometerUI:
         if self.mode == "settings":
             self._draw_settings(surface, font)
         if self.mode == 'sensor':
-            self._sensor.draw(surface, font)
+            if self._sensor is not None:
+                self._sensor.draw(surface, font)
+            else:
+                surface.blit(font.render('Waiting for camera...', True, TEXT), (8, 8))
         if self.mode == 'channel':
             self._channel.draw(surface, font)
         if self.mode in ("live", "saved") and surface.get_clip().colliderect(self.spectrum_rect):
@@ -1005,7 +1040,7 @@ class SpectrometerUI:
             surface.blit(text, text.get_rect(center=rect.center))
         if self.mode in ("live", "saved") and self._camera_bar is not None:
             surface.blit(self._camera_bar, self.camera_slice_rect.move(1, 1))
-        if self.mode in ('saved', 'sensor'):
+        if self.mode == 'saved':
             small = self._font(18)
             rect = pygame.Rect(16, 12, 220 if self._blackbody else 300, 18)
             pygame.draw.rect(surface, PANEL, rect)
@@ -1258,6 +1293,18 @@ class SpectrometerUI:
         METRICS.add('draw_ms', (time.monotonic() - started) * 1000)
 
     def _poll_camera(self):
+        if self.camera is not None and self.mode == 'sensor':
+            if self._sensor_paused:
+                return False
+            preview = self.camera.poll_sensor_preview()
+            if preview is None:
+                return False
+            from .sensor import SensorSelection
+            from .config import DEFAULTS
+            roi = (self._sensor.roi if self._sensor is not None else
+                   self.calibration_settings.get('sensor_area', DEFAULTS['calibration']['sensor_area']))
+            self._sensor = SensorSelection(preview, roi)
+            return True
         if self.camera is None or self.mode != "live":
             return False
         frame = self.camera.poll()
@@ -1312,7 +1359,7 @@ class SpectrometerUI:
                                     self.camera.request_pause()
                             else:
                                 self._resume_pending_capture()
-                                if self.camera is not None and self.mode == "live":
+                                if self.camera is not None and (self.mode == "live" or (self.mode == "sensor" and not self._sensor_paused)):
                                     self.camera.request_resume()
                                 self._timed_draw(surface, font)
                                 hardware.present(surface)

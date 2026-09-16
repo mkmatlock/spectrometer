@@ -3,7 +3,7 @@ from pathlib import Path
 import pickle
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pygame
@@ -31,7 +31,10 @@ class SensorTests(unittest.TestCase):
         self.store = SettingsStore(Path(self.temp.name) / '.spectrometer_config')
         self.store.update(camera={'resolution': (640, 480)},
                           calibration={'sensor_area': (0, 100, 600, 200)})
-        self.ui = SpectrometerUI(review_directory=self.temp.name,
+        self.camera = Mock()
+        self.camera.poll_sensor_preview.return_value = load_sensor(self.path)
+        self.ui = SpectrometerUI(review_directory=self.temp.name, camera=self.camera,
+            camera_settings=deepcopy(self.store.data['camera']),
             calibration_settings=deepcopy(self.store.data['calibration']),
             on_calibration_changed=lambda data: self.store.update(calibration=data))
         self.addCleanup(self.ui.review.close)
@@ -44,13 +47,17 @@ class SensorTests(unittest.TestCase):
         self.ui._calibrate()
         self.ui._calibration_selected = 1
         self.ui._select_calibration()
-        self.assertEqual(self.ui.mode, 'review')
-        self.ui.review.selected = 0
-        self.ui.buttons[0][2]()
-        self.ui.review.future.result(timeout=5)
-        self.ui._poll_review()
         self.assertEqual(self.ui.mode, 'sensor')
-        self.assertEqual([b[0] for b in self.ui.buttons], ['Accept', 'Reset', 'Cancel'])
+        self.assertTrue(self.ui._poll_camera())
+        self.assertEqual([b[0] for b in self.ui.buttons], ['Accept', 'Pause', 'Cancel'])
+        rect = self.ui._sensor.rect
+        self.ui._pointer_event('lcd', rect.center, True)
+        self.ui._pointer_motion('lcd', rect.topleft)
+        self.ui._pointer_event('lcd', rect.topleft, False)
+        self.assertEqual(self.ui._sensor.roi, (0, 100, 600, 200))
+        self.ui._toggle_sensor_pause()
+        self.assertEqual(self.ui.buttons[1][0], 'Resume')
+        self.assertFalse(self.ui._poll_camera())
         self.assertEqual(self.ui._sensor.roi, (0, 100, 600, 200))
 
     def drag(self):
@@ -71,7 +78,8 @@ class SensorTests(unittest.TestCase):
         self.open_sensor()
         self.drag()
         self.ui.buttons[1][2]()
-        self.assertEqual(self.ui._sensor.roi, (0, 0, 640, 480))
+        self.assertFalse(self.ui._sensor_paused)
+        self.assertEqual(self.ui._sensor.roi, (0, 60, 640, 240))
         pygame.font.init()
         self.addCleanup(pygame.font.quit)
         self.ui.draw(pygame.Surface((480, 320)), pygame.font.Font(None, 22))
@@ -104,13 +112,10 @@ class SensorTests(unittest.TestCase):
     def test_accept_persists_and_updates_camera(self):
         self.open_sensor()
         self.drag()
-        camera = CameraStream()
-        self.addCleanup(camera.close)
-        self.ui.camera = camera
         self.ui.buttons[0][2]()
         self.assertEqual(self.ui.mode, 'settings')
-        self.assertEqual(camera.settings.roi, (0, 60, 640, 240))
-        self.assertEqual(SettingsStore(self.store.path).data['calibration']['sensor_area'], camera.settings.roi)
+        self.camera.request_end_sensor_preview.assert_called_once_with((0, 60, 640, 240))
+        self.assertEqual(SettingsStore(self.store.path).data['calibration']['sensor_area'], (0, 60, 640, 240))
         self.assertEqual(self.path.read_bytes(), self.original)
 
     def test_invalid_roi_and_failed_save_stay_in_editor(self):

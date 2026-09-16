@@ -179,6 +179,8 @@ class CameraStream:
         self.settings = settings or CameraSettings()
         self._lock = threading.Lock()
         self._latest = None
+        self._sensor_preview = None
+        self._sensor_preview_enabled = False
         self._error = None
         self._camera = None
         self._started = False
@@ -276,6 +278,16 @@ class CameraStream:
             with self._lock:
                 channel_ranges = deepcopy(self._calibration.get('channel_ranges', {}))
             with MappedArray(request, "main", write=False) as mapped:
+                if self._sensor_preview_enabled:
+                    import cv2
+                    width, height = self.settings.resolution
+                    factor = min(480 / width, 256 / height)
+                    size = (round(width * factor), round(height * factor))
+                    small = cv2.resize(mapped.array, size, interpolation=cv2.INTER_LINEAR)
+                    pixels = cv2.cvtColor(small, cv2.COLOR_BGR2RGB).tobytes()
+                    with self._lock:
+                        self._sensor_preview = (pixels, size, (width, height))
+                    return
                 current = process_frame(mapped.array, self.settings.roi, self.settings.resolution,
                                         self._processing_workspace, channel_ranges)
                 x0, y0, x1, y1 = self.settings.roi
@@ -316,7 +328,7 @@ class CameraStream:
     def request_capture(self, defer_save=False):
         """Save the next frame; allow only one capture in flight on the Pi Zero."""
         with self._lock:
-            if not self._started or self._capture_busy:
+            if not self._started or self._capture_busy or self._sensor_preview_enabled:
                 LOGGER.info("Capture unavailable: camera stopped or a capture is still saving")
                 return False
             self._defer_save = defer_save
@@ -327,7 +339,7 @@ class CameraStream:
     def request_api_capture(self, name):
         """Reserve the next frame and complete only after its file is saved."""
         with self._lock:
-            if not self._started or self._capture_busy:
+            if not self._started or self._capture_busy or self._sensor_preview_enabled:
                 return None
             future = Future()
             self._api_capture = (name, future)
@@ -541,6 +553,34 @@ class CameraStream:
         """Queue camera allocation and restart away from the UI thread."""
         return self._lifecycle.submit(self._lifecycle_call,
                                       lambda: self.reconfigure(settings))
+
+    def request_sensor_preview(self, settings):
+        def start():
+            self.pause()
+            self._sensor_preview_enabled = True
+            with self._lock:
+                self._sensor_preview = None
+            if settings != self.settings:
+                self.reconfigure(settings)
+            else:
+                self.resume()
+        return self._lifecycle.submit(self._lifecycle_call, start)
+
+    def poll_sensor_preview(self):
+        with self._lock:
+            if self._error is not None:
+                raise RuntimeError("Camera preview failed") from self._error
+            preview, self._sensor_preview = self._sensor_preview, None
+            return preview
+
+    def request_end_sensor_preview(self, roi):
+        def finish():
+            self.pause()
+            self._sensor_preview_enabled = False
+            with self._lock:
+                self._sensor_preview = None
+            self.set_roi(roi)
+        return self._lifecycle.submit(self._lifecycle_call, finish)
 
     def request_cancel_capture(self):
         """Cancel naming safely after any active camera callback, then restart."""

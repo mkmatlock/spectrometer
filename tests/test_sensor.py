@@ -49,7 +49,7 @@ class SensorTests(unittest.TestCase):
         self.ui.review.future.result(timeout=5)
         self.ui._poll_review()
         self.assertEqual(self.ui.mode, 'sensor')
-        self.assertEqual([b[0] for b in self.ui.buttons], ['Accept', 'Cancel'])
+        self.assertEqual([b[0] for b in self.ui.buttons], ['Accept', 'Reset', 'Cancel'])
         self.assertEqual(self.ui._sensor.roi, (0, 100, 600, 200))
 
     def drag(self):
@@ -68,10 +68,12 @@ class SensorTests(unittest.TestCase):
         self.assertLessEqual(size[1], 256)
         self.open_sensor()
         self.drag()
+        self.ui.buttons[1][2]()
+        self.assertEqual(self.ui._sensor.roi, (0, 0, 640, 480))
         pygame.font.init()
         self.addCleanup(pygame.font.quit)
         self.ui.draw(pygame.Surface((480, 320)), pygame.font.Font(None, 22))
-        self.ui.buttons[1][2]()
+        self.ui.buttons[2][2]()
         self.assertEqual(self.ui.mode, 'settings')
         self.assertEqual(SettingsStore(self.store.path).data['calibration']['sensor_area'], (0, 100, 600, 200))
         self.assertEqual(self.path.read_bytes(), self.original)

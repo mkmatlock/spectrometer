@@ -353,8 +353,9 @@ class SpectrometerUI:
                 from .camera import SPECTRUM_ROI
                 self._sensor = SensorSelection(frame, self.calibration_settings.get('sensor_area', SPECTRUM_ROI))
                 self.mode = 'sensor'
-                self.buttons = [("Accept", pygame.Rect(8, 264, 228, 48), self._accept_sensor),
-                                ("Cancel", pygame.Rect(244, 264, 228, 48), self._exit_review)]
+                self.buttons = [("Accept", pygame.Rect(8, 264, 149, 48), self._accept_sensor),
+                                ("Reset", pygame.Rect(165, 264, 150, 48), self._reset_sensor),
+                                ("Cancel", pygame.Rect(323, 264, 149, 48), self._exit_review)]
                 return
             from .plot import SpectrumPlot
             from .camera import BAR_SIZE
@@ -370,8 +371,9 @@ class SpectrometerUI:
             self.mode = "saved"
             self._reset_peaks(frame.intensity)
             if self._scale_active:
-                self._saved_buttons = [("Modes", pygame.Rect(8, 264, 228, 48), self._ask_filter),
-                                       ("Back", pygame.Rect(244, 264, 228, 48), self._review_list)]
+                self._saved_buttons = [("Modes", pygame.Rect(8, 264, 149, 48), self._ask_filter),
+                                       ("Reset", pygame.Rect(165, 264, 150, 48), self._reset_scale),
+                                       ("Back", pygame.Rect(323, 264, 149, 48), self._review_list)]
                 self.buttons = self._saved_buttons
                 return
             self._saved_buttons = [
@@ -441,6 +443,13 @@ class SpectrometerUI:
             self.camera.set_roi(roi)
             self.camera.set_calibration(self.calibration_settings)
         self._exit_review()
+
+    def _reset_sensor(self):
+        width, height = self._sensor.resolution
+        self._sensor.roi = (0, 0, width, height)
+        self._sensor.start = None
+        self._sensor.message = ''
+        self._redraw = True
 
     def _update_plot(self, frame):
         from .plot import SpectrumPlot
@@ -548,6 +557,23 @@ class SpectrometerUI:
         if self.camera is not None:
             self.camera.set_calibration(self.calibration_settings)
         return True
+
+    def _reset_scale(self):
+        updated = dict(self.calibration_settings, scale={})
+        try:
+            if self._on_calibration_changed is not None:
+                self._on_calibration_changed(updated)
+        except (OSError, ValueError):
+            LOGGER.exception("Could not reset calibration settings")
+            self._review_peak_label = "Could not save settings"
+            self._redraw = True
+            return
+        self.calibration_settings.update(updated)
+        if self.camera is not None:
+            self.camera.set_calibration(self.calibration_settings)
+        if self._peaks is not None:
+            self._peaks.selected = None
+        self._redraw = True
 
     def _cancel_label(self):
         self._keypad_open = False

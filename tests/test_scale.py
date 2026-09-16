@@ -1,4 +1,5 @@
 import pickle
+from copy import deepcopy
 from pathlib import Path
 import tempfile
 import unittest
@@ -8,10 +9,26 @@ import numpy as np
 import pygame
 
 from spectrometer.scale import PeakSelection, peak_indices
+from spectrometer.config import SettingsStore
 from spectrometer.ui import SpectrometerUI
 
 
 class ScaleTests(unittest.TestCase):
+    def test_reset_removes_all_labels_and_persists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / '.spectrometer_config')
+            store.update(calibration={'scale': {1000: 500.0, 2500: 700.0}})
+            ui = SpectrometerUI(
+                calibration_settings=deepcopy(store.data['calibration']),
+                on_calibration_changed=lambda data: store.update(calibration=data))
+            try:
+                ui._reset_scale()
+                self.assertEqual(ui.calibration_settings['scale'], {})
+                self.assertEqual(SettingsStore(store.path).data['calibration']['scale'], {})
+            finally:
+                ui.review.close()
+                ui.settings_view.close()
+
     def test_absorption_plateau_valleys_and_toggle_in_scale(self):
         np.testing.assert_array_equal(peak_indices([9, 2, 2, 2, 9, 3, 9], absorption=True), [2, 5])
         ui = SpectrometerUI()
@@ -22,8 +39,9 @@ class ScaleTests(unittest.TestCase):
             values[1200] = 10000
             ui._plot.update(values)
             ui._reset_peaks(values)
-            ui._saved_buttons = [('Modes', pygame.Rect(8, 264, 228, 48), ui._ask_filter),
-                                 ('Back', pygame.Rect(244, 264, 228, 48), ui._review_list)]
+            ui._saved_buttons = [('Modes', pygame.Rect(8, 264, 149, 48), ui._ask_filter),
+                                 ('Reset', pygame.Rect(165, 264, 150, 48), ui._reset_scale),
+                                 ('Back', pygame.Rect(323, 264, 149, 48), ui._review_list)]
             ui._ask_filter()
             ui._choose_filter('Emission')
             self.assertEqual(ui.buttons[3][0], 'Absorption')
@@ -34,7 +52,7 @@ class ScaleTests(unittest.TestCase):
             self.assertEqual(ui._peak_message, 'Pixel 1200')
             self.assertEqual([b[0] for b in ui.buttons], ['Label', 'Back'])
             ui._back_peak()
-            self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Back'])
+            self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Reset', 'Back'])
             ui._ask_filter()
             ui._choose_filter('Absorption')
             self.assertFalse(ui._absorption)
@@ -81,7 +99,7 @@ class ScaleTests(unittest.TestCase):
                 ui.review.future.result(timeout=5)
                 ui._poll_review()
                 self.assertEqual(ui.mode, 'saved')
-                self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Back'])
+                self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Reset', 'Back'])
                 position = tuple(ui._peaks.positions[0] + (2, 2))
                 ui._pointer_event('lcd', position, True)
                 ui._pointer_event('lcd', position, False)

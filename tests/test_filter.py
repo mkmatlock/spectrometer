@@ -46,7 +46,8 @@ class FilterTests(unittest.TestCase):
                 ui._poll_review()
                 points = ui._plot.points
                 ui._ask_filter()
-                self.assertEqual([b[0] for b in ui.buttons], ['Red', 'Green', 'Blue', 'Emission', 'Back'])
+                self.assertEqual([b[0] for b in ui.buttons],
+                                 ['Red', 'Green', 'Blue', 'Emission', 'Black Body', 'Back'])
                 rgb = np.full((250, 3500, 3), 80, np.uint8)
                 with patch('spectrometer.review.raw_rgb', return_value=rgb):
                     ui._choose_filter('Green')

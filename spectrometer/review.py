@@ -120,6 +120,8 @@ class ReviewList:
         self.filter_channel = "All"
         self._wanted_channel = None
         self._channel_cache = {}
+        self.blackbody_future = None
+        self.blackbody_error = None
 
     def refresh(self):
         self.message = ''
@@ -215,6 +217,28 @@ class ReviewList:
             self.filter_future = None
         self._wanted_channel = None
 
+    def request_blackbody(self, intensity, roi, scale):
+        from .blackbody import fit_blackbody
+        self.cancel_blackbody()
+        self.blackbody_error = None
+        self.blackbody_future = self._executor.submit(
+            fit_blackbody, np.asarray(intensity).copy(), tuple(roi), scale)
+
+    def poll_blackbody(self):
+        if self.blackbody_future is None or not self.blackbody_future.done():
+            return None
+        future, self.blackbody_future = self.blackbody_future, None
+        try:
+            return future.result()
+        except Exception as exc:
+            self.blackbody_error = str(exc)
+            return None
+
+    def cancel_blackbody(self):
+        if self.blackbody_future is not None:
+            self.blackbody_future.cancel()
+            self.blackbody_future = None
+
     def _channel_frame(self, channels):
         original = self._channel_cache['All']
         if len(channels) == 3:
@@ -277,6 +301,7 @@ class ReviewList:
         return True
 
     def close(self):
+        self.cancel_blackbody()
         self._names_executor.shutdown(wait=True, cancel_futures=True)
         self._executor.shutdown(wait=True, cancel_futures=True)
         self.catalog.close()

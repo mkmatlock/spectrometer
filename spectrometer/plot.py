@@ -10,6 +10,7 @@ class SpectrumPlot:
     SIZE = (464, 200)
     AREA = pygame.Rect(1, 28, 462, 130)
     TRACE = (103, 219, 185)
+    FIT_TRACE = (255, 209, 102)
 
     def __init__(self, roi=SPECTRUM_ROI):
         self.roi = tuple(roi)
@@ -19,6 +20,7 @@ class SpectrumPlot:
         self._xs = np.repeat(np.arange(self.AREA.left, self.AREA.right), 2)
         self._background = None
         self.points = None
+        self.fit_points = None
         self._labels = ()
         self.scale = None
 
@@ -53,6 +55,25 @@ class SpectrumPlot:
         ).astype(np.int32)
         self.points = np.column_stack((self._xs, ys)).tolist()
 
+    def set_fit(self, intensity=None):
+        """Set or clear a fitted curve drawn over the measured spectrum."""
+        if intensity is None:
+            self.fit_points = None
+            return
+        values = np.asarray(intensity, dtype=float)
+        if values.shape != (self.roi[2] - self.roi[0],):
+            raise ValueError("Fit must contain one value per ROI column")
+        centres = (self.edges[:-1] + self.edges[1:] - 1) // 2
+        sampled = values[centres][::-1]
+        valid = np.isfinite(sampled)
+        sampled = np.where(valid, sampled, 0.0)
+        ys = self.AREA.bottom - 1 - np.rint(
+            np.clip(sampled, 0, self.maximum) * ((self.AREA.height - 1) / self.maximum)
+        ).astype(np.int32)
+        points = np.column_stack((np.arange(self.AREA.left, self.AREA.right), ys))
+        self.fit_points = [points[start:end].tolist() for start, end in _runs(valid)
+                           if end - start >= 2]
+
     def _make_background(self):
         surface = pygame.Surface(self.SIZE)
         surface.fill("#1b2632")
@@ -84,3 +105,14 @@ class SpectrumPlot:
             patch = surface.subsurface(pygame.Rect(position, self.SIZE))
             patch.set_clip(surface.get_clip().move(-position[0], -position[1]))
             pygame.draw.lines(patch, self.TRACE, False, self.points)
+        if self.fit_points:
+            patch = surface.subsurface(pygame.Rect(position, self.SIZE))
+            patch.set_clip(surface.get_clip().move(-position[0], -position[1]))
+            for points in self.fit_points:
+                pygame.draw.lines(patch, self.FIT_TRACE, False, points, 2)
+
+
+def _runs(mask):
+    padded = np.r_[False, mask, False].astype(np.int8)
+    changes = np.flatnonzero(np.diff(padded))
+    return zip(changes[::2], changes[1::2])

@@ -51,6 +51,9 @@ class SpectrometerUI:
         self._scale_active = False
         self._channels = {"Red", "Green", "Blue"}
         self._absorption = False
+        self._blackbody = False
+        self._blackbody_label = None
+        self._mode_message = ''
         self._sensor_active = False
         self._sensor = None
         self._peak_dialog = False
@@ -270,6 +273,9 @@ class SpectrometerUI:
         self._peak_dialog = False
         self._peak_touch = None
         self.review.cancel_filter()
+        self.review.cancel_blackbody()
+        self._blackbody = False
+        self._blackbody_label = None
         self.mode = "review"
         self.buttons = [("Display", pygame.Rect(8, 264, 228, 48), self._display_capture),
                         ("Back", pygame.Rect(244, 264, 228, 48), self._exit_review)]
@@ -308,6 +314,17 @@ class SpectrometerUI:
                 applied = self.review.filter_channel
                 self._channels = set(('Red', 'Green', 'Blue') if applied == 'All' else applied)
                 self._redraw = True
+            fitting = self.review.blackbody_future is not None
+            fit = self.review.poll_blackbody()
+            if fit is not None and self._blackbody:
+                self._plot.set_fit(fit.intensity)
+                self._blackbody_label = 'T: {:,.0f} K'.format(fit.temperature)
+                self._redraw = True
+            elif fitting and self.review.blackbody_future is None:
+                if self._blackbody:
+                    self._blackbody_label = 'Fit unavailable'
+                    self._mode_message = self.review.blackbody_error or 'Black Body fit failed'
+                self._redraw = True
         if self.mode != "review":
             return
         was_loading = self.review.future is not None
@@ -328,6 +345,8 @@ class SpectrometerUI:
 
             self._channels = {"Red", "Green", "Blue"}
             self._absorption = False
+            self._blackbody = False
+            self._blackbody_label = None
             self._plot = SpectrumPlot(frame.roi)
             self.mode = "saved"
             self._update_plot(frame)
@@ -498,20 +517,34 @@ class SpectrometerUI:
 
     def _ask_filter(self):
         self._filter_dialog = True
+        self._mode_message = ''
         self._mode_buttons()
         self._redraw = True
 
     def _mode_buttons(self):
-        names = ('Red', 'Green', 'Blue', 'Absorption' if self._absorption else 'Emission')
-        self.buttons = [(name, pygame.Rect(64, 66 + i * 38, 352, 34),
+        names = ['Red', 'Green', 'Blue', 'Absorption' if self._absorption else 'Emission']
+        if not self._scale_active:
+            names.append('Black Body')
+        self.buttons = [(name, pygame.Rect(64, 62 + i * 34, 352, 30),
                          lambda channel=name: self._choose_filter(channel))
                         for i, name in enumerate(names)]
-        self.buttons.append(('Back', pygame.Rect(64, 224, 352, 48), self._back_filter))
+        self.buttons.append(('Back', pygame.Rect(64, 238, 352, 40), self._back_filter))
 
     def _choose_filter(self, channel):
         if channel in ('Emission', 'Absorption'):
             self._absorption = not self._absorption
             self._reset_peaks(self._spectrum_intensity)
+        elif channel == 'Black Body':
+            if self._blackbody:
+                self._blackbody = False
+                self._blackbody_label = None
+                self.review.cancel_blackbody()
+                self._plot.set_fit()
+            elif self._plot.scale is None:
+                self._mode_message = 'Black Body needs wavelength calibration'
+            else:
+                self._blackbody = True
+                self._start_blackbody_fit()
         else:
             self._channels.symmetric_difference_update({channel})
             frame = self.review.request_channels(tuple(name for name in ('Red', 'Green', 'Blue')
@@ -526,7 +559,15 @@ class SpectrometerUI:
         self._update_plot(frame)
         self._reset_peaks(frame.intensity)
         self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
+        if self._blackbody:
+            self._start_blackbody_fit()
         self._redraw = True
+
+    def _start_blackbody_fit(self):
+        self._plot.set_fit()
+        self._blackbody_label = 'Fitting...'
+        self._mode_message = ''
+        self.review.request_blackbody(self._spectrum_intensity, self._plot.roi, self._plot.scale)
 
     def _back_filter(self):
         self._filter_dialog = False
@@ -719,16 +760,20 @@ class SpectrometerUI:
             surface.blit(self._camera_bar, self.camera_slice_rect.move(1, 1))
         if self.mode in ('saved', 'sensor'):
             small = self._font(18)
-            # Reserve the right side for a touched peak's position.
-            rect = pygame.Rect(16, 12, 300, 18)
+            rect = pygame.Rect(16, 12, 220 if self._blackbody else 300, 18)
             pygame.draw.rect(surface, PANEL, rect)
             text = self._fit_text(small, self.review.name(self.review.loaded_path), rect.width)
             surface.blit(text, rect.topleft)
         if self.mode == "saved" and not self._scale_active and self._review_peak_label:
             small = self._font(18)
             text = small.render(self._review_peak_label, True, "#ffd166")
-            surface.blit(text, text.get_rect(topright=(self.spectrum_rect.right - 8,
+            surface.blit(text, text.get_rect(topright=(374 if self._blackbody else self.spectrum_rect.right - 8,
                                                       self.spectrum_rect.top + 5)))
+        if self.mode == 'saved' and self._blackbody_label:
+            small = self._font(18)
+            text = small.render(self._blackbody_label, True, '#ffd166')
+            surface.blit(text, text.get_rect(topright=(self.spectrum_rect.right - 8,
+                                                       self.spectrum_rect.top + 5)))
         if self.mode == "saved":
             if self._scale_active:
                 self._draw_peak_labels(surface)
@@ -773,7 +818,7 @@ class SpectrometerUI:
             surface.blit(shade, (0, 0))
             pygame.draw.rect(surface, PANEL, (48, 28, 384, 260), border_radius=8)
             small = self._font(19)
-            title = self.review.message or "Modes"
+            title = self._mode_message or self.review.message or "Modes"
             text = small.render(title[:52], True, TEXT)
             surface.blit(text, text.get_rect(center=(240, 46)))
         if self._keypad_open:
@@ -784,6 +829,8 @@ class SpectrometerUI:
             color = PRESSED if self._pressed == i else BUTTON
             if self._filter_dialog and label in ("Red", "Green", "Blue"):
                 color = PRESSED if label in self._channels else BACKGROUND
+            if self._filter_dialog and label == 'Black Body':
+                color = PRESSED if self._blackbody else BACKGROUND
             pygame.draw.rect(surface, color, rect, border_radius=6)
             text = font.render(label, True, TEXT)
             surface.blit(text, text.get_rect(center=rect.center))

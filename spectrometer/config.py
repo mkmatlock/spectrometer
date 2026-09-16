@@ -10,7 +10,8 @@ import tempfile
 
 DEFAULTS = {
     'camera': {'frame_rate': 5.0, 'resolution': (4056, 3040), 'exposure_us': None},
-    'calibration': {'scale': {}, 'sensor_area': (0, 1550, 3500, 1800)},
+    'calibration': {'scale': {}, 'sensor_area': (0, 1550, 3500, 1800),
+                    'channel_ranges': {}},
 }
 
 
@@ -35,6 +36,14 @@ def validate(data):
         if (type(pixel) is not int or not 0 <= pixel < size[0]
                 or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0):
             raise ValueError('Invalid scale calibration pair')
+    ranges = calibration.get('channel_ranges', {})
+    if not isinstance(ranges, dict) or any(name not in ('Red', 'Green', 'Blue') for name in ranges):
+        raise ValueError('Channel ranges must contain only Red, Green, and Blue')
+    for extent in ranges.values():
+        if (not isinstance(extent, (tuple, list)) or len(extent) != 2
+                or any(type(v) is not int for v in extent)
+                or not 0 <= extent[0] <= extent[1] < size[0]):
+            raise ValueError('Channel ranges must be pixel pairs inside the camera image')
 
 
 class SettingsStore:

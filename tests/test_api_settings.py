@@ -26,7 +26,8 @@ class APISettingsTests(unittest.TestCase):
             with running_server('127.0.0.1', 0, capture_directory=directory, settings_store=store) as server:
                 result = self.get_settings(server)
                 self.assertEqual(result['camera'], {'frame_rate': 5, 'resolution': [4056, 3040], 'exposure_us': None})
-                self.assertEqual(result['calibration'], {'scale': {}, 'sensor_area': [0, 1550, 3500, 1800]})
+                self.assertEqual(result['calibration'], {
+                    'scale': {}, 'sensor_area': [0, 1550, 3500, 1800], 'channel_ranges': {}})
                 store.update(camera={'frame_rate': 4, 'exposure_us': 20000},
                              calibration={'scale': {100: 650, 200: 500}, 'sensor_area': (100, 1500, 3500, 1800)})
                 result = self.get_settings(server)

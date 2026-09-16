@@ -123,7 +123,7 @@ class CameraTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "processing failed"):
                 stream.poll()
 
-    def test_grayscale_column_totals_use_full_roi_without_overflow(self):
+    def test_channel_sum_totals_use_full_roi_without_overflow(self):
         frame = np.zeros((3040, 4056, 3), dtype=np.uint8)
         frame[1550:1800, 0] = (255, 255, 255)
         frame[1550:1800, 1] = (0, 0, 255)
@@ -133,9 +133,9 @@ class CameraTests(unittest.TestCase):
         result = process_frame(frame)
         self.assertEqual(result.intensity.dtype, np.int32)
         self.assertEqual(result.intensity.shape, (3500,))
-        self.assertEqual(result.intensity[0], 63750)
-        self.assertEqual(result.intensity[1], 76 * 250)
-        self.assertEqual(result.intensity[3499], 29 * 250)
+        self.assertEqual(result.intensity[0], 3 * 63750)
+        self.assertEqual(result.intensity[1], 255 * 250)
+        self.assertEqual(result.intensity[3499], 255 * 250)
         self.assertTrue(np.all(result.intensity[2:3499] == 0))
 
     def test_ui_renders_bar_without_changing_plot_placeholder(self):

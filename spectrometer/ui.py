@@ -49,6 +49,8 @@ class SpectrometerUI:
         self._delete_dialog = False
         self._filter_dialog = False
         self._scale_active = False
+        self._channel_active = False
+        self._channel = None
         self._channels = {"Red", "Green", "Blue"}
         self._absorption = False
         self._blackbody = False
@@ -71,8 +73,8 @@ class SpectrometerUI:
         self._calibration_dialog = False
         self._calibration_selected = None
         self._calibration_pressed = None
-        self._calibration_rows = [(name, pygame.Rect(64, 80 + i * 44, 352, 40))
-                                  for i, name in enumerate(("Background", "Sensor", "Scale"))]
+        self._calibration_rows = [(name, pygame.Rect(64, 72 + i * 36, 352, 32))
+                                  for i, name in enumerate(("Background", "Sensor", "Scale", "Channel"))]
         if on_capture is None and camera is not None:
             on_capture = self._name_capture
         self.spectrum_rect = pygame.Rect(8, 8, 464, 200)
@@ -233,10 +235,11 @@ class SpectrometerUI:
             self._calibration_message = "Choose a calibration mode"
         else:
             name = self._calibration_rows[self._calibration_selected][0]
-            if name in ("Scale", "Sensor"):
+            if name in ("Scale", "Sensor", "Channel"):
                 self._calibration_dialog = False
                 self._scale_active = name == "Scale"
                 self._sensor_active = name == "Sensor"
+                self._channel_active = name == "Channel"
                 self._live_view = (self._plot, self._camera_bar)
                 self.review.refresh()
                 self._review_list()
@@ -285,10 +288,12 @@ class SpectrometerUI:
         if self.review.future is not None:
             self.review.future.cancel()
             self.review.future = None
-        if self._scale_active or self._sensor_active:
+        if self._scale_active or self._sensor_active or self._channel_active:
             self._scale_active = False
             self._sensor_active = False
+            self._channel_active = False
             self._sensor = None
+            self._channel = None
             self._plot, self._camera_bar = self._live_view
             self.mode = "settings"
             self.buttons = self._settings_buttons
@@ -303,7 +308,7 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_review(self):
-        if self.mode in ("review", "saved", "sensor") and self.review.poll_names():
+        if self.mode in ("review", "saved", "sensor", "channel") and self.review.poll_names():
             self._redraw = True
         if self.mode == "saved":
             loading = self.review.filter_future is not None
@@ -332,6 +337,17 @@ class SpectrometerUI:
         if was_loading and self.review.future is None:
             self._redraw = True
         if frame is not None:
+            if self._channel_active:
+                from .channel import ChannelCalibration
+                self._channel = ChannelCalibration(
+                    frame, self.calibration_settings.get('channel_ranges', {}))
+                self.mode = 'channel'
+                self.buttons = [
+                    ('Accept', pygame.Rect(8, 272, 149, 40), self._accept_channel),
+                    ('Reset', pygame.Rect(165, 272, 150, 40), self._reset_channel),
+                    ('Cancel', pygame.Rect(323, 272, 149, 40), self._exit_review)]
+                self._redraw = True
+                return
             if self._sensor_active:
                 from .sensor import SensorSelection
                 from .camera import SPECTRUM_ROI
@@ -365,11 +381,39 @@ class SpectrometerUI:
             self.buttons = self._saved_buttons
 
     def _display_capture(self):
-        if self._sensor_active:
+        if self._channel_active:
+            from .review import load_channels
+            self.review.display(load_channels)
+        elif self._sensor_active:
             from .sensor import load_sensor
             self.review.display(load_sensor)
         else:
             self.review.display()
+
+    def _reset_channel(self):
+        self._channel.reset()
+        self._redraw = True
+
+    def _accept_channel(self):
+        from .config import DEFAULTS, validate
+        updated = dict(self.calibration_settings,
+                       channel_ranges=dict(self._channel.ranges))
+        camera_settings = dict(DEFAULTS['camera'])
+        if self.camera is not None:
+            camera_settings['resolution'] = self.camera.settings.resolution
+        try:
+            validate({'camera': camera_settings, 'calibration': updated})
+            if self._on_calibration_changed is not None:
+                self._on_calibration_changed(updated)
+        except (OSError, ValueError):
+            LOGGER.exception('Could not save channel calibration')
+            self._channel.message = 'Could not save channel ranges'
+            self._redraw = True
+            return
+        self.calibration_settings.update(updated)
+        if self.camera is not None:
+            self.camera.set_calibration(self.calibration_settings)
+        self._exit_review()
 
     def _accept_sensor(self):
         from .config import DEFAULTS, validate
@@ -400,8 +444,9 @@ class SpectrometerUI:
 
     def _update_plot(self, frame):
         from .plot import SpectrumPlot
-        if self._plot.roi != tuple(frame.roi):
-            self._plot = SpectrumPlot(frame.roi)
+        maximum = frame.maximum or ((frame.roi[3] - frame.roi[1]) * 255)
+        if self._plot.roi != tuple(frame.roi) or self._plot.maximum != maximum:
+            self._plot = SpectrumPlot(frame.roi, maximum)
             self._redraw = True
         calibration = frame.calibration if self.mode == 'saved' else self.calibration_settings
         if self._plot.set_calibration({} if self._scale_active else calibration.get('scale', {})):
@@ -596,6 +641,9 @@ class SpectrometerUI:
         self._redraw = True
 
     def _pointer_motion(self, pointer, position):
+        if self.mode == 'channel' and self._pointer == pointer and self._channel.dragging is not None:
+            self._channel.drag(position)
+            self._redraw = True
         if self.mode == 'sensor' and self._pointer == pointer and self._sensor.start is not None:
             self._sensor.drag(position)
             self._redraw = True
@@ -653,6 +701,8 @@ class SpectrometerUI:
         if down and self._pointer is None:
             self._pointer = pointer
             self._pressed = self._button_at(position)
+            if self.mode == 'channel' and self._channel.start(position):
+                self._redraw = True
             if self.mode == 'sensor' and self._sensor.rect.collidepoint(position):
                 self._sensor.start = self._sensor.point(position)
             if (self.mode == "saved" and self._peaks is not None
@@ -665,6 +715,12 @@ class SpectrometerUI:
             if self.mode == "review" and 34 <= position[1] < 244:
                 self._list_start = (position[1], self.review.offset)
         elif not down and self._pointer == pointer:
+            if self.mode == 'channel' and self._channel.dragging is not None:
+                self._channel.drag(position)
+                self._channel.stop()
+                self._pointer = self._pressed = None
+                self._redraw = True
+                return
             if self.mode == 'sensor' and self._sensor.start is not None:
                 if self._sensor.point(position) != self._sensor.start:
                     self._sensor.drag(position)
@@ -745,10 +801,12 @@ class SpectrometerUI:
             self._draw_settings(surface, font)
         if self.mode == 'sensor':
             self._sensor.draw(surface, font)
+        if self.mode == 'channel':
+            self._channel.draw(surface, font)
         if self.mode in ("live", "saved") and surface.get_clip().colliderect(self.spectrum_rect):
             self._plot.draw(surface, self.spectrum_rect.topleft)
         for rect, label in ((self.camera_slice_rect, "Raw camera slice — placeholder"),):
-            if self.mode in ("review", "settings", "sensor"):
+            if self.mode in ("review", "settings", "sensor", "channel"):
                 break
             if not surface.get_clip().colliderect(rect):
                 continue
@@ -911,6 +969,8 @@ class SpectrometerUI:
             header = "Scale calibration: select a capture"
         if self._sensor_active and not self.review.message and self.review.entries:
             header = "Sensor calibration: select a capture"
+        if self._channel_active and not self.review.message and self.review.entries:
+            header = "Channel calibration: select a capture"
         surface.blit(small.render(header[:65], True, TEXT), (8, 10))
         for row, path in enumerate(self.review.entries[self.review.offset:self.review.offset + 5]):
             index = row + self.review.offset
@@ -1010,6 +1070,8 @@ class SpectrometerUI:
                             self._peak_touch = None
                             if self._sensor is not None:
                                 self._sensor.start = None
+                            if self._channel is not None:
+                                self._channel.stop()
                             last_position = None
                             if power == 'hold':
                                 self._ask_shutdown()
@@ -1086,7 +1148,7 @@ class SpectrometerUI:
                 event = pygame.event.wait(20) if (self.camera is not None or self.review.future is not None
                                                 or self.settings_view.future is not None
                                                 or self.review.filter_future is not None
-                                                or self.mode in ("review", "saved", "sensor")) else pygame.event.wait()
+                                                or self.mode in ("review", "saved", "sensor", "channel")) else pygame.event.wait()
                 if event.type == pygame.QUIT or (
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
                 ):
@@ -1097,6 +1159,8 @@ class SpectrometerUI:
                     self._pointer = self._pressed = None
                     if self._sensor is not None:
                         self._sensor.start = None
+                    if self._channel is not None:
+                        self._channel.stop()
                 new_frame = self._poll_camera()
                 self._poll_capture()
                 self._poll_review()

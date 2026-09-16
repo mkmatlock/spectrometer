@@ -67,6 +67,7 @@ class CaptureTests(unittest.TestCase):
                 "calibration_settings": {
                     "scale": {100: 700, 200: 500}, "sensor_area": frame.roi,
                     "future_calibration": {"values": [1, 2]}},
+                "intensity_calculation": "rgb_channel_sum",
             })
             self.assertNotIn("raw_camera_format", record)
             self.assertNotIn('calibration_settings', record)

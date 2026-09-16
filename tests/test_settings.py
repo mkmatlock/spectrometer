@@ -63,7 +63,8 @@ class SettingsTests(unittest.TestCase):
                 ui.settings_view.future.result(timeout=5)
             ui._calibrate()
             self.assertEqual([b[0] for b in ui.buttons], ['Select', 'Back'])
-            self.assertEqual([r[0] for r in ui._calibration_rows], ['Background', 'Sensor', 'Scale'])
+            self.assertEqual([r[0] for r in ui._calibration_rows],
+                             ['Background', 'Sensor', 'Scale', 'Channel'])
             ui._select_calibration()
             self.assertIn('Choose', ui._calibration_message)
             for index, (name, rect) in enumerate(ui._calibration_rows[:1]):

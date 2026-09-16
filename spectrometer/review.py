@@ -42,7 +42,10 @@ def load_spectrum(path):
         bar = raw_bar(record)
     if not isinstance(bar, bytes) or len(bar) != BAR_SIZE[0] * BAR_SIZE[1] * 3:
         raise ValueError('Invalid camera bar data')
-    return SpectrumFrame(bar, intensity.copy(), roi, record_calibration(record))
+    settings = record.get('instrument_settings', {})
+    channels = 3 if settings.get('intensity_calculation') == 'rgb_channel_sum' else 1
+    maximum = (roi[3] - roi[1]) * 255 * channels
+    return SpectrumFrame(bar, intensity.copy(), roi, record_calibration(record), maximum)
 
 
 def raw_rgb(record):
@@ -92,7 +95,7 @@ def load_channels(path):
         bar = np.zeros_like(preview)
         bar[:, :, index] = preview[:, :, index]
         result[channel] = SpectrumFrame(bar.tobytes(), totals, roi,
-                                        record_calibration(record))
+                                        record_calibration(record), (roi[3] - roi[1]) * 255)
     return result
 
 
@@ -202,8 +205,11 @@ class ReviewList:
         try:
             result = future.result()
             self.loaded_path = self._loading_path
-            self._channel_cache = {'All': result}
-            self.filter_channel = 'All'
+            if isinstance(result, dict):
+                self._channel_cache = {}
+            else:
+                self._channel_cache = {'All': result}
+                self.filter_channel = 'All'
             self.cancel_filter()
             self.message = ''
             return result
@@ -245,13 +251,15 @@ class ReviewList:
             return original
         if not channels:
             return SpectrumFrame(bytes(len(original.bar)), np.zeros_like(original.intensity),
-                                 original.roi, original.calibration)
+                                 original.roi, original.calibration, original.maximum)
         frames = [self._channel_cache[name] for name in channels]
-        # Average enabled channels to keep the intensity range independent of
-        # channel count. Their preview bytes occupy disjoint RGB components.
-        totals = np.rint(sum(frame.intensity.astype(float) for frame in frames) / len(frames)).astype(np.int32)
+        # Match live processing by summing every enabled channel. Preview bytes
+        # occupy disjoint RGB components, so their sum cannot overflow uint8.
+        totals = sum((frame.intensity for frame in frames),
+                     start=np.zeros_like(original.intensity))
         bar = sum(np.frombuffer(frame.bar, np.uint8) for frame in frames).tobytes()
-        return SpectrumFrame(bar, totals, original.roi, original.calibration)
+        maximum = (original.roi[3] - original.roi[1]) * 255 * len(frames)
+        return SpectrumFrame(bar, totals, original.roi, original.calibration, maximum)
 
     def request_filter(self, channel):
         if channel not in ('Red', 'Green', 'Blue', 'All'):

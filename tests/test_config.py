@@ -24,8 +24,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(pickle.loads(self.path.read_bytes()), DEFAULTS)
         store.update(camera={'frame_rate': 4, 'exposure_us': 20000,
                              'resolution': (2028, 1520)},
-                     calibration={'scale': {100: 532.1}, 'sensor_area': (0, 100, 2000, 200)})
+                     calibration={'scale': {100: 532.1}, 'sensor_area': (0, 100, 2000, 200),
+                                  'channel_ranges': {'Red': (100, 1900)}})
         self.assertEqual(SettingsStore(self.path).data, store.data)
+        self.assertEqual(store.data['calibration']['channel_ranges']['Red'], (100, 1900))
         self.assertEqual(DEFAULTS['calibration']['scale'], {})
 
     def test_failed_write_preserves_previous_file_and_memory(self):
@@ -82,7 +84,7 @@ class ConfigTests(unittest.TestCase):
         frame = process_frame(image, roi, (640, 480))
         self.assertEqual(frame.roi, roi)
         self.assertEqual(frame.intensity.shape, (500,))
-        self.assertEqual(frame.intensity[100], 20 * 255)
+        self.assertEqual(frame.intensity[100], 20 * 255 * 3)
         capture = self.path.parent / 'spectrum.pkl'
         capture.write_bytes(pickle.dumps({'spectrum_roi': roi, 'spectrum_bar': frame.bar,
                                          'spectrum_intensity': frame.intensity}))
@@ -92,5 +94,6 @@ class ConfigTests(unittest.TestCase):
         self.addCleanup(ui.settings_view.close)
         ui._update_plot(loaded)
         ui._reset_peaks(loaded.intensity)
+        # Legacy captures without an intensity marker retain grayscale scaling.
         self.assertEqual(ui._plot.maximum, 20 * 255)
         self.assertEqual(ui._peaks.select(ui._peaks.positions[0]), 200)

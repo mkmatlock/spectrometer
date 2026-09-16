@@ -57,7 +57,7 @@ def spectrum_bar(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE, workspace=None
     started = time.monotonic()
     # This is a display-only thumbnail. Linear sampling is substantially less
     # expensive than area resampling on the Pi Zero and does not affect the
-    # full-resolution grayscale values used or saved as the spectrum.
+    # full-resolution channel sums used or saved as the spectrum.
     preview = _workspace_array(workspace, 'preview', (BAR_SIZE[1], BAR_SIZE[0], 3), 'uint8')
     cv2.resize(crop, BAR_SIZE, dst=preview, interpolation=cv2.INTER_LINEAR)
     METRICS.add('bar_resize_ms', (time.monotonic() - started) * 1000)
@@ -75,24 +75,32 @@ class SpectrumFrame:
     intensity: object  # Owned int32 array, one total per sensor column.
     roi: tuple = SPECTRUM_ROI
     calibration: dict = field(default_factory=dict)
+    maximum: int = None
 
 
-def process_frame(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE, workspace=None):
-    """Sum grayscale intensity vertically in the original, unscaled ROI."""
+def process_frame(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE, workspace=None,
+                  channel_ranges=None):
+    """Sum enabled B, G, and R values vertically in the original ROI."""
     import cv2
 
     bar = spectrum_bar(frame, roi, resolution, workspace)
     x0, y0, x1, y1 = roi
     started = time.monotonic()
-    gray = _workspace_array(workspace, 'gray', (y1 - y0, x1 - x0), 'uint8')
-    cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY, dst=gray)
-    METRICS.add('grayscale_ms', (time.monotonic() - started) * 1000)
-    started = time.monotonic()
+    width = x1 - x0
+    channel_totals = _workspace_array(workspace, 'channel_totals', (1, width, 3), 'int32')
+    cv2.reduce(frame[y0:y1, x0:x1], 0, cv2.REDUCE_SUM,
+               dst=channel_totals, dtype=cv2.CV_32S)
+    METRICS.add('channel_reduce_ms', (time.monotonic() - started) * 1000)
     totals = _workspace_array(workspace, 'totals', (1, x1 - x0), 'int32')
-    cv2.reduce(gray, 0, cv2.REDUCE_SUM, dst=totals, dtype=cv2.CV_32S)
-    METRICS.add('reduce_ms', (time.monotonic() - started) * 1000)
+    totals.fill(0)
+    ranges = channel_ranges or {}
+    for name, index in (('Blue', 0), ('Green', 1), ('Red', 2)):
+        low, high = ranges.get(name, (x0, x1 - 1))
+        left, right = max(x0, low) - x0, min(x1 - 1, high) - x0 + 1
+        if left < right:
+            totals[0, left:right] += channel_totals[0, left:right, index]
     return SpectrumFrame(bar, totals.reshape(-1).copy() if workspace is not None else totals.reshape(-1),
-                         tuple(roi))
+                         tuple(roi), maximum=(y1 - y0) * 255 * 3)
 
 
 class CameraStream:
@@ -123,7 +131,8 @@ class CameraStream:
         self._api_capture = None
         self._capture_draft = None
         self._defer_save = False
-        self._calibration = {'scale': {}, 'sensor_area': self.settings.roi}
+        self._calibration = {'scale': {}, 'sensor_area': self.settings.roi,
+                             'channel_ranges': {}}
 
     def __enter__(self):
         started = time.monotonic()
@@ -199,9 +208,11 @@ class CameraStream:
             capture = self._capture_pending
             self._capture_pending = False
         try:
+            with self._lock:
+                channel_ranges = deepcopy(self._calibration.get('channel_ranges', {}))
             with MappedArray(request, "main", write=False) as mapped:
                 frame = process_frame(mapped.array, self.settings.roi, self.settings.resolution,
-                                      self._processing_workspace)
+                                      self._processing_workspace, channel_ranges)
             metadata = request.get_metadata()
             if not self._logged_frame:
                 LOGGER.info("Camera first frame: duration=%s us, exposure=%s us",
@@ -292,6 +303,7 @@ class CameraStream:
                     "exposure_time_us": metadata["ExposureTime"],
                     "raw_camera_format": self._raw_config.copy(),
                     "calibration_settings": calibration,
+                    "intensity_calculation": "rgb_channel_sum",
                 },
                 # make_array copies the packed sensor buffer before libcamera
                 # recycles it. Never retain the mapped camera buffer in a worker.

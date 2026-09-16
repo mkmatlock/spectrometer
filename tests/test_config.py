@@ -44,7 +44,7 @@ class ConfigTests(unittest.TestCase):
         store = SettingsStore(self.path)
         original = self.path.read_bytes()
         for changes in ({'frame_rate': 0}, {'exposure_us': -1}, {'resolution': None},
-                        {'frame_averaging': 0}, {'frame_averaging': 33}):
+                        {'frame_averaging': 0}, {'frame_averaging': 11}):
             with self.assertRaises(ValueError):
                 store.update(camera=changes)
         self.assertEqual(self.path.read_bytes(), original)

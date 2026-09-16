@@ -15,7 +15,7 @@ class SettingsTests(unittest.TestCase):
         with patch('spectrometer.settings._output', return_value=None):
             self.assertEqual(network_status(), ('Unavailable', 'Not connected / unavailable'))
 
-    def test_read_only_settings_navigation_and_background_network(self):
+    def test_settings_navigation_and_background_network(self):
         camera = Mock()
         camera.settings_snapshot.return_value = {'frame_rate': 5.0, 'resolution': (4056, 3040),
                                                  'exposure_us': 20000, 'frame_averaging': 3}
@@ -34,6 +34,8 @@ class SettingsTests(unittest.TestCase):
             ui._pointer_event('lcd', (40, 50), True)
             ui._pointer_event('lcd', (40, 50), False)
             self.assertEqual(ui.mode, 'settings')
+            self.assertEqual(ui._settings_dialog, 'frame_rate')
+            ui.buttons[1][2]()
             ui.buttons[0][2]()
             self.assertTrue(ui._calibration_dialog)
             ui.buttons[1][2]()
@@ -42,6 +44,60 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(ui.mode, 'live')
             camera.request_pause.assert_called_once_with()
             camera.request_resume.assert_called_once_with()
+        finally:
+            ui.review.close()
+            ui.settings_view.close()
+
+    def test_edit_camera_settings_and_reconfigure_on_exit(self):
+        camera = Mock()
+        changes = []
+        calibration = {'scale': {100: 500.0}, 'sensor_area': (0, 100, 1000, 200),
+                       'channel_ranges': {'Red': (0, 999)}}
+        ui = SpectrometerUI(
+            camera=camera,
+            camera_settings={'frame_rate': 5.0, 'resolution': (4056, 3040),
+                             'exposure_us': None, 'frame_averaging': 3},
+            calibration_settings=calibration,
+            on_camera_settings_changed=lambda values, calibration=None:
+            changes.append((values.copy(), calibration)))
+        try:
+            with patch('spectrometer.settings.network_status', return_value=('10.0.0.2', 'Lab')):
+                ui._open_settings()
+
+            ui._edit_setting(0)
+            self.assertEqual((ui._settings_min, ui._settings_max), (1, 10))
+            ui._settings_value = 10
+            ui._accept_setting()
+
+            ui._edit_setting(2)
+            self.assertEqual((ui._settings_min, ui._settings_max), (0, 100))
+            ui._settings_value = 25
+            ui._accept_setting()
+
+            ui._edit_setting(3)
+            self.assertEqual((ui._settings_min, ui._settings_max), (1, 10))
+            ui._settings_value = 10
+            ui._accept_setting()
+
+            ui._edit_setting(1)
+            ui._resolution_selected = 1
+            ui._accept_setting()
+            self.assertEqual(ui._camera_settings['resolution'], (2028, 1520))
+            self.assertEqual(ui.calibration_settings,
+                             {'scale': {}, 'sensor_area': (0, 0, 2028, 1520),
+                              'channel_ranges': {}})
+            self.assertEqual(ui.settings_view.rows[0:4],
+                             [('Frame rate', '10 fps'),
+                              ('Camera resolution', '2028 x 1520'),
+                              ('Exposure time', '25 ms'), ('Frame averaging', '10')])
+
+            ui._exit_settings()
+            configured = camera.request_reconfigure.call_args.args[0]
+            self.assertEqual(configured.resolution, (2028, 1520))
+            self.assertEqual(configured.roi, (0, 0, 2028, 1520))
+            self.assertEqual(configured.frame_averaging, 10)
+            self.assertEqual(len(changes), 4)
+            camera.request_resume.assert_not_called()
         finally:
             ui.review.close()
             ui.settings_view.close()

@@ -45,6 +45,20 @@ class CameraTests(unittest.TestCase):
                     "FrameDurationLimits": (200000, 200000),
                     "AeEnable": False, "ExposureTime": 200000})
 
+    def test_runtime_reconfigure_restarts_with_new_settings(self):
+        camera = self.fake_camera()
+        with patch.dict(sys.modules, {"picamera2": SimpleNamespace(Picamera2=lambda: camera)}):
+            with CameraStream() as stream:
+                settings = CameraSettings(frame_rate=10, exposure_us=50000,
+                                          frame_averaging=2)
+                stream.request_reconfigure(settings).result(timeout=2)
+                self.assertEqual(stream.settings, settings)
+                self.assertEqual(camera.create_video_configuration.call_count, 2)
+                self.assertEqual(camera.configure.call_count, 2)
+                self.assertEqual(camera.start.call_count, 2)
+                camera.stop.assert_called_once_with()
+                self.assertEqual(stream._averager.count, 2)
+
     def test_five_fps_default_does_not_enumerate_modes(self):
         from unittest.mock import PropertyMock
 
@@ -74,7 +88,7 @@ class CameraTests(unittest.TestCase):
                 CameraSettings(frame_rate=fps)
         with self.assertRaises(ValueError):
             CameraSettings(exposure_us=0)
-        for averaging in (0, 33, 1.5):
+        for averaging in (0, 11, 1.5):
             with self.assertRaises(ValueError):
                 CameraSettings(frame_averaging=averaging)
 

@@ -1,6 +1,7 @@
 """Full-resolution IMX477 acquisition with an OpenCV spectrum-bar preview."""
 
 from dataclasses import dataclass, replace, field
+from collections import deque
 from copy import deepcopy
 import logging
 import math
@@ -28,12 +29,18 @@ class CameraSettings:
     exposure_us: int = None  # None keeps automatic exposure enabled.
     resolution: tuple = SENSOR_SIZE
     roi: tuple = SPECTRUM_ROI
+    frame_averaging: int = 3
 
     def __post_init__(self):
         if not math.isfinite(self.frame_rate) or self.frame_rate <= 0:
             raise ValueError("Frame rate must be positive and finite")
         if self.exposure_us is not None and self.exposure_us <= 0:
             raise ValueError("Exposure must be a positive number of microseconds")
+        if type(self.frame_averaging) is not int or not 1 <= self.frame_averaging <= 32:
+            raise ValueError("Frame averaging must be an integer from 1 to 32")
+        roi_bytes = (self.roi[2] - self.roi[0]) * (self.roi[3] - self.roi[1]) * 3
+        if roi_bytes * self.frame_averaging > 128 * 1024 * 1024:
+            raise ValueError("Frame averaging window is too large for the sensor area")
 
 
 def _workspace_array(workspace, name, shape, dtype):
@@ -76,6 +83,63 @@ class SpectrumFrame:
     roi: tuple = SPECTRUM_ROI
     calibration: dict = field(default_factory=dict)
     maximum: int = None
+
+
+class FrameAverager:
+    """Exact rolling average of ROI images, previews, and spectrum totals."""
+
+    def __init__(self, count):
+        self.count = count
+        self.reset()
+
+    def reset(self):
+        self.frames = deque()
+        self.bar_sum = None
+        self.intensity_sum = None
+
+    def add(self, frame, bgr_image):
+        import numpy as np
+
+        image = np.ascontiguousarray(bgr_image).copy()
+        bar = np.frombuffer(frame.bar, np.uint8).copy()
+        intensity = np.asarray(frame.intensity, dtype=np.int32).copy()
+        if self.frames and self.frames[0][0].shape != image.shape:
+            self.reset()
+        if self.bar_sum is None:
+            self.bar_sum = np.zeros(bar.shape, np.uint16)
+            self.intensity_sum = np.zeros(intensity.shape, np.int64)
+        if len(self.frames) == self.count:
+            old_image, old_bar, old_intensity = self.frames.popleft()
+            self.bar_sum -= old_bar
+            self.intensity_sum -= old_intensity
+        self.frames.append((image, bar, intensity))
+        self.bar_sum += bar
+        self.intensity_sum += intensity
+        if len(self.frames) < self.count:
+            return None
+        averaged_bar = np.floor_divide(
+            self.bar_sum + self.count // 2, self.count).astype(np.uint8).tobytes()
+        averaged_intensity = np.floor_divide(
+            self.intensity_sum + self.count // 2, self.count).astype(np.int32)
+        return SpectrumFrame(averaged_bar, averaged_intensity, frame.roi,
+                             frame.calibration, frame.maximum)
+
+    def image(self):
+        import numpy as np
+        if len(self.frames) < self.count:
+            return None
+        shape = self.frames[0][0].shape
+        averaged = np.empty(shape, np.uint8)
+        # Accumulate a few rows at a time so a full-resolution ROI does not
+        # require another full uint16 image alongside the rolling window.
+        for start in range(0, shape[0], 16):
+            end = min(shape[0], start + 16)
+            total = np.zeros((end - start, shape[1], shape[2]), np.uint16)
+            for image, _, _ in self.frames:
+                total += image[start:end]
+            averaged[start:end] = np.floor_divide(
+                total + self.count // 2, self.count).astype(np.uint8)
+        return averaged
 
 
 def process_frame(frame, roi=SPECTRUM_ROI, resolution=SENSOR_SIZE, workspace=None,
@@ -121,6 +185,7 @@ class CameraStream:
         self._logged_frame = False
         self._last_callback = None
         self._processing_workspace = {}
+        self._averager = FrameAverager(self.settings.frame_averaging)
         self._frame_duration_us = None
         self._exposure_us = self.settings.exposure_us
         self._capture_directory = Path.home() if capture_directory is None else Path(capture_directory)
@@ -211,8 +276,15 @@ class CameraStream:
             with self._lock:
                 channel_ranges = deepcopy(self._calibration.get('channel_ranges', {}))
             with MappedArray(request, "main", write=False) as mapped:
-                frame = process_frame(mapped.array, self.settings.roi, self.settings.resolution,
-                                      self._processing_workspace, channel_ranges)
+                current = process_frame(mapped.array, self.settings.roi, self.settings.resolution,
+                                        self._processing_workspace, channel_ranges)
+                x0, y0, x1, y1 = self.settings.roi
+                frame = self._averager.add(current, mapped.array[y0:y1, x0:x1])
+            if frame is None:
+                if capture:
+                    with self._lock:
+                        self._capture_pending = True
+                return
             metadata = request.get_metadata()
             if not self._logged_frame:
                 LOGGER.info("Camera first frame: duration=%s us, exposure=%s us",
@@ -224,7 +296,7 @@ class CameraStream:
                 self._frame_duration_us = metadata.get("FrameDuration", self._frame_duration_us)
                 self._exposure_us = metadata.get("ExposureTime", self._exposure_us)
             if capture:
-                self._queue_capture(request, frame, timestamp)
+                self._queue_capture(request, frame, timestamp, self._averager.image())
             METRICS.add('frames')
             frame_duration = metadata.get('FrameDuration')
             if isinstance(frame_duration, (int, float)) and frame_duration > 0:
@@ -289,10 +361,16 @@ class CameraStream:
                                if self._frame_duration_us else self.settings.frame_rate),
                 "resolution": self.settings.resolution,
                 "exposure_us": self._exposure_us,
+                "frame_averaging": self.settings.frame_averaging,
             }
 
-    def _queue_capture(self, request, frame, timestamp):
+    def _queue_capture(self, request, frame, timestamp, averaged_image):
         try:
+            import numpy as np
+            expected = (frame.roi[3] - frame.roi[1], frame.roi[2] - frame.roi[0], 3)
+            if (not isinstance(averaged_image, np.ndarray)
+                    or averaged_image.dtype != np.uint8 or averaged_image.shape != expected):
+                raise ValueError('Averaged camera image does not match the spectrum ROI')
             with self._lock:
                 calibration = deepcopy(self._calibration)
             calibration['sensor_area'] = tuple(frame.roi)
@@ -302,12 +380,16 @@ class CameraStream:
                 "instrument_settings": {
                     "exposure_time_us": metadata["ExposureTime"],
                     "raw_camera_format": self._raw_config.copy(),
+                    "averaged_camera_format": {
+                        "size": (frame.roi[2] - frame.roi[0], frame.roi[3] - frame.roi[1]),
+                        "format": "BGR888", "origin": frame.roi[:2],
+                        "sensor_size": self.settings.resolution,
+                    },
+                    "frame_averaging": self.settings.frame_averaging,
                     "calibration_settings": calibration,
                     "intensity_calculation": "rgb_channel_sum",
                 },
-                # make_array copies the packed sensor buffer before libcamera
-                # recycles it. Never retain the mapped camera buffer in a worker.
-                "raw_camera_output": request.make_array("raw"),
+                "averaged_camera_output": averaged_image,
                 "spectrum_intensity": frame.intensity.copy(),
                 "spectrum_bar": frame.bar,
                 "spectrum_roi": frame.roi,
@@ -415,6 +497,7 @@ class CameraStream:
     def set_roi(self, roi):
         """Apply an accepted sensor area while acquisition is paused."""
         self.settings = replace(self.settings, roi=tuple(roi))
+        self._averager.reset()
 
     def resume(self):
         """Restart the existing configuration without probing or reallocating."""
@@ -423,6 +506,7 @@ class CameraStream:
             stopped = not self._started
         if camera is not None and stopped:
             started = time.monotonic()
+            self._averager.reset()
             camera.start(show_preview=False)
             with self._lock:
                 self._started = True

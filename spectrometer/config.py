@@ -9,7 +9,8 @@ import tempfile
 
 
 DEFAULTS = {
-    'camera': {'frame_rate': 5.0, 'resolution': (4056, 3040), 'exposure_us': None},
+    'camera': {'frame_rate': 5.0, 'resolution': (4056, 3040), 'exposure_us': None,
+               'frame_averaging': 3},
     'calibration': {'scale': {}, 'sensor_area': (0, 1550, 3500, 1800),
                     'channel_ranges': {}},
 }
@@ -22,6 +23,9 @@ def validate(data):
         raise ValueError('Frame rate must be positive and finite')
     if exposure is not None and (type(exposure) is not int or exposure <= 0):
         raise ValueError('Exposure must be positive integer microseconds or None')
+    averaging = camera.get('frame_averaging', 3)
+    if type(averaging) is not int or not 1 <= averaging <= 32:
+        raise ValueError('Frame averaging must be an integer from 1 to 32')
     size, roi = camera['resolution'], calibration['sensor_area']
     if (not isinstance(size, (tuple, list)) or len(size) != 2 or any(type(v) is not int or v <= 0 for v in size)
             or size[0] > 4056 or size[1] > 3040):
@@ -30,6 +34,8 @@ def validate(data):
             or not 0 <= roi[0] < roi[2] <= size[0]
             or not 0 <= roi[1] < roi[3] <= size[1] or roi[2] - roi[0] < 462):
         raise ValueError('Sensor area must be an even-aligned bounding box inside the image, at least 462 pixels wide')
+    if (roi[2] - roi[0]) * (roi[3] - roi[1]) * 3 * averaging > 128 * 1024 * 1024:
+        raise ValueError('Frame averaging window is too large for the sensor area')
     if not isinstance(calibration['scale'], dict):
         raise ValueError('Scale calibration must be a pixel/value dictionary')
     for pixel, value in calibration['scale'].items():

@@ -36,9 +36,9 @@ class NamedCaptureTests(unittest.TestCase):
                     ui._capture_key('1')
                     request = Mock()
                     request.get_metadata.return_value = {'ExposureTime': 100}
-                    request.make_array.return_value = np.array([1, 2], np.uint8)
-                    frame = SpectrumFrame(b'', np.array([123, 456], np.int32))
-                    camera._queue_capture(request, frame, datetime(2026, 9, 14, 12, 0, 0))
+                    frame = SpectrumFrame(b'', np.array([123, 456], np.int32), (0, 0, 2, 2))
+                    camera._queue_capture(request, frame, datetime(2026, 9, 14, 12, 0, 0),
+                                          np.zeros((2, 2, 3), np.uint8))
                     frame.intensity[:] = 0
                     ui._poll_capture()
                     camera._camera.stop.assert_called_once()

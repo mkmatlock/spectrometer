@@ -35,12 +35,14 @@ class SettingsView:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='settings-network')
 
     def open(self, snapshot):
-        fps, size, exposure = (snapshot.get(key) for key in ('frame_rate', 'resolution', 'exposure_us'))
+        fps, size, exposure, averaging = (snapshot.get(key) for key in
+                                          ('frame_rate', 'resolution', 'exposure_us', 'frame_averaging'))
         self.rows = [
             ('Frame rate', f'{fps:g} fps' if fps is not None else 'Unavailable'),
             ('Camera resolution', f'{size[0]} x {size[1]}' if size else 'Unavailable'),
             ('Exposure time', f'{exposure / 1000:g} ms' if exposure is not None
              else ('Auto (pending)' if snapshot else 'Unavailable')),
+            ('Frame averaging', str(averaging) if averaging is not None else 'Unavailable'),
             ('IP address', 'Loading...'),
             ('Wi-Fi network', 'Loading...'),
         ]
@@ -56,7 +58,7 @@ class SettingsView:
         except Exception:
             address = network = 'Unavailable'
         self.future = None
-        self.rows[3:] = [('IP address', address), ('Wi-Fi network', network)]
+        self.rows[4:] = [('IP address', address), ('Wi-Fi network', network)]
         return True
 
     def close(self):

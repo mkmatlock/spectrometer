@@ -35,10 +35,13 @@ def json_value(value):
 def spectrum_response(path, record):
     """Full JSON representation of a saved spectrum."""
     result = dict(record, filename=path.name)
-    raw = record['raw_camera_output']
-    result['raw_camera_output'] = {
-        'encoding': 'base64', 'dtype': str(raw.dtype), 'shape': list(raw.shape),
-        'data': base64.b64encode(raw.tobytes()).decode('ascii')}
+    for key in ('raw_camera_output', 'averaged_camera_output'):
+        if key not in record:
+            continue
+        image = record[key]
+        result[key] = {
+            'encoding': 'base64', 'dtype': str(image.dtype), 'shape': list(image.shape),
+            'data': base64.b64encode(image.tobytes()).decode('ascii')}
     return result
 
 

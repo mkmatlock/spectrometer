@@ -25,7 +25,8 @@ class APISettingsTests(unittest.TestCase):
             store = SettingsStore(Path(directory) / '.spectrometer_config')
             with running_server('127.0.0.1', 0, capture_directory=directory, settings_store=store) as server:
                 result = self.get_settings(server)
-                self.assertEqual(result['camera'], {'frame_rate': 5, 'resolution': [4056, 3040], 'exposure_us': None})
+                self.assertEqual(result['camera'], {'frame_rate': 5, 'resolution': [4056, 3040],
+                                                    'exposure_us': None, 'frame_averaging': 3})
                 self.assertEqual(result['calibration'], {
                     'scale': {}, 'sensor_area': [0, 1550, 3500, 1800], 'channel_ranges': {}})
                 store.update(camera={'frame_rate': 4, 'exposure_us': 20000},

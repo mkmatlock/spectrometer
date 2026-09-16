@@ -18,7 +18,7 @@ class SettingsTests(unittest.TestCase):
     def test_read_only_settings_navigation_and_background_network(self):
         camera = Mock()
         camera.settings_snapshot.return_value = {'frame_rate': 5.0, 'resolution': (4056, 3040),
-                                                 'exposure_us': 20000}
+                                                 'exposure_us': 20000, 'frame_averaging': 3}
         ui = SpectrometerUI(camera=camera)
         try:
             with patch('spectrometer.settings.network_status', return_value=('10.0.0.2', 'Lab')):
@@ -28,6 +28,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(ui.mode, 'settings')
             self.assertEqual(ui.settings_view.rows, [('Frame rate', '5 fps'),
                              ('Camera resolution', '4056 x 3040'), ('Exposure time', '20 ms'),
+                             ('Frame averaging', '3'),
                              ('IP address', '10.0.0.2'), ('Wi-Fi network', 'Lab')])
             self.assertFalse(ui._poll_camera())
             ui._pointer_event('lcd', (40, 50), True)
@@ -51,7 +52,8 @@ class SettingsTests(unittest.TestCase):
             camera._frame_duration_us = 250000
             camera._exposure_us = 12345
             self.assertEqual(camera.settings_snapshot(), {'frame_rate': 4.0,
-                             'resolution': (4056, 3040), 'exposure_us': 12345})
+                             'resolution': (4056, 3040), 'exposure_us': 12345,
+                             'frame_averaging': 3})
         finally:
             camera.close()
 

@@ -16,6 +16,15 @@ def load_sensor(path):
     config = record.get('instrument_settings', {}).get(
         'raw_camera_format', record.get('raw_camera_format', {}))
     width, height = config['size']
+    averaged = record.get('averaged_camera_output')
+    if averaged is not None:
+        from .review import raw_rgb, record_roi
+        rgb = raw_rgb(record)
+        bounds = record_roi(record)
+        scale = min(480 / rgb.shape[1], 256 / rgb.shape[0])
+        size = (round(rgb.shape[1] * scale), round(rgb.shape[0] * scale))
+        small = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+        return small.tobytes(), size, (width, height), bounds
     fmt = config['format']
     if fmt not in PACKED_12_FORMATS or width % 2 or height % 2:
         raise ValueError('Unsupported raw camera format')
@@ -36,12 +45,16 @@ def load_sensor(path):
             small = cv2.addWeighted(channels[color], 0.5, small, 0.5, 0)
         channels[color] = small
     rgb = np.dstack([channels[color] for color in 'RGB'])
-    return rgb.tobytes(), size, (width, height)
+    return rgb.tobytes(), size, (width, height), (0, 0, width, height)
 
 
 class SensorSelection:
     def __init__(self, preview, roi):
-        pixels, size, self.resolution = preview
+        if len(preview) == 3:
+            pixels, size, self.resolution = preview
+            self.bounds = (0, 0, *self.resolution)
+        else:
+            pixels, size, self.resolution, self.bounds = preview
         self.image = pygame.transform.flip(pygame.image.frombuffer(pixels, size, 'RGB'), True, False)
         self.rect = self.image.get_rect(center=(240, 128))
         self.roi = tuple(roi)
@@ -51,8 +64,9 @@ class SensorSelection:
     def point(self, position):
         x = min(1, max(0, (position[0] - self.rect.left) / self.rect.width))
         y = min(1, max(0, (position[1] - self.rect.top) / self.rect.height))
-        return (round((1 - x) * self.resolution[0] / 2) * 2,
-                round(y * self.resolution[1] / 2) * 2)
+        x0, y0, x1, y1 = self.bounds
+        return (x0 + round((1 - x) * (x1 - x0) / 2) * 2,
+                y0 + round(y * (y1 - y0) / 2) * 2)
 
     def drag(self, position):
         end = self.point(position)
@@ -63,11 +77,12 @@ class SensorSelection:
     def draw(self, surface, font):
         surface.blit(self.image, self.rect)
         x0, y0, x1, y1 = self.roi
-        width, height = self.resolution
-        left = self.rect.left + round((width - x1) * self.rect.width / width)
-        top = self.rect.top + round(y0 * self.rect.height / height)
-        right = self.rect.left + round((width - x0) * self.rect.width / width)
-        bottom = self.rect.top + round(y1 * self.rect.height / height)
+        bx0, by0, bx1, by1 = self.bounds
+        width, height = bx1 - bx0, by1 - by0
+        left = self.rect.left + round((bx1 - x1) * self.rect.width / width)
+        top = self.rect.top + round((y0 - by0) * self.rect.height / height)
+        right = self.rect.left + round((bx1 - x0) * self.rect.width / width)
+        bottom = self.rect.top + round((y1 - by0) * self.rect.height / height)
         pygame.draw.rect(surface, '#ffd166', (left, top, max(1, right-left), max(1, bottom-top)), 2)
         if self.message:
             text = font.render(self.message, True, '#ffd166', '#111820')

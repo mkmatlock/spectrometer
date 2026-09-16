@@ -11,6 +11,8 @@ def main():
     parser.add_argument("--touch-debug", action="store_true",
                         help="Log raw/mapped touch coordinates and button actions")
     parser.add_argument("--fps", type=float, help="Save requested camera fps (default: stored value, initially 5)")
+    parser.add_argument("--frame-averaging", type=int,
+                        help="Save rolling frame count (default: stored value, initially 3)")
     exposure = parser.add_mutually_exclusive_group()
     exposure.add_argument("--exposure-us", type=int, help="Save manual exposure in microseconds")
     exposure.add_argument("--auto-exposure", action="store_true", help="Save automatic exposure mode")
@@ -33,6 +35,8 @@ def main():
         overrides = {}
         if args.fps is not None:
             overrides['frame_rate'] = args.fps
+        if args.frame_averaging is not None:
+            overrides['frame_averaging'] = args.frame_averaging
         if args.exposure_us is not None or args.auto_exposure:
             overrides['exposure_us'] = args.exposure_us
         store.update(camera=overrides)

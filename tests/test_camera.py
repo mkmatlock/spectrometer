@@ -8,7 +8,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pygame
 
-from spectrometer.camera import BAR_SIZE, CameraSettings, CameraStream, SpectrumFrame, process_frame, spectrum_bar
+from spectrometer.camera import (BAR_SIZE, CameraSettings, CameraStream, FrameAverager,
+                                 SpectrumFrame, process_frame, spectrum_bar)
 from spectrometer.ui import SpectrometerUI
 
 
@@ -73,6 +74,23 @@ class CameraTests(unittest.TestCase):
                 CameraSettings(frame_rate=fps)
         with self.assertRaises(ValueError):
             CameraSettings(exposure_us=0)
+        for averaging in (0, 33, 1.5):
+            with self.assertRaises(ValueError):
+                CameraSettings(frame_averaging=averaging)
+
+    def test_rolling_frame_average(self):
+        averager = FrameAverager(3)
+        results = []
+        for value in (3, 6, 12, 24):
+            frame = SpectrumFrame(bytes([value]) * (BAR_SIZE[0] * BAR_SIZE[1] * 3),
+                                  np.array([value, value * 2], np.int32))
+            results.append(averager.add(frame, np.full((2, 2, 3), value, np.uint8)))
+        self.assertIsNone(results[0])
+        self.assertIsNone(results[1])
+        np.testing.assert_array_equal(results[2].intensity, [7, 14])
+        np.testing.assert_array_equal(results[3].intensity, [14, 28])
+        self.assertEqual(results[3].bar[0], 14)
+        np.testing.assert_array_equal(averager.image(), np.full((2, 2, 3), 14, np.uint8))
 
     def test_packed_mode_accepts_all_bayer_orders(self):
         for order in ("RGGB", "GRBG", "GBRG", "BGGR"):
@@ -108,13 +126,15 @@ class CameraTests(unittest.TestCase):
             spectrum_bar(frame[:100])
 
     def test_latest_frame_only_and_callback_failure(self):
-        stream = CameraStream()
+        stream = CameraStream(CameraSettings(resolution=(4, 2), roi=(0, 0, 4, 2),
+                                             frame_averaging=1))
         mapped = Mock()
-        mapped.__enter__ = Mock(return_value=SimpleNamespace(array="frame"))
+        mapped.__enter__ = Mock(return_value=SimpleNamespace(array=np.zeros((2, 4, 3), np.uint8)))
         mapped.__exit__ = Mock(return_value=False)
         module = SimpleNamespace(MappedArray=Mock(return_value=mapped))
         with patch.dict(sys.modules, {"picamera2": module}), \
-                patch("spectrometer.camera.process_frame", side_effect=[b"first", b"newest", ValueError("bad frame")]):
+                patch("spectrometer.camera.process_frame", side_effect=[b"first", b"newest", ValueError("bad frame")]), \
+                patch.object(stream._averager, 'add', side_effect=lambda frame, image: frame):
             stream._on_frame(Mock())
             stream._on_frame(Mock())
             self.assertEqual(stream.poll(), b"newest")

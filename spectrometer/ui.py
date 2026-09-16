@@ -1024,9 +1024,9 @@ class SpectrometerUI:
         title = self.settings_view.message or "Settings"
         surface.blit(small.render(title, True, TEXT), (8, 10))
         for index, (name, value) in enumerate(self.settings_view.rows):
-            rect = pygame.Rect(8, 34 + index * 42, 464, 40)
+            rect = pygame.Rect(8, 32 + index * 37, 464, 35)
             pygame.draw.rect(surface, PANEL, rect)
-            surface.blit(font.render(name, True, MUTED), (16, rect.y + 12))
+            surface.blit(font.render(name, True, MUTED), (16, rect.y + 9))
             # Fit long SSIDs without allowing values to overlap option names.
             while small.size(value)[0] > 245 and len(value) > 1:
                 value = value[:-4] + "..." if len(value) > 4 else value[:-1]

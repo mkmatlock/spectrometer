@@ -49,10 +49,22 @@ def load_spectrum(path):
 
 
 def raw_rgb(record):
-    """Reconstruct the bar for older captures that saved only packed Bayer data."""
+    """Load an averaged BGR ROI or reconstruct older packed Bayer data."""
     import cv2
 
     settings = record.get('instrument_settings', {})
+    averaged = record.get('averaged_camera_output')
+    if averaged is not None:
+        config = settings.get('averaged_camera_format', {})
+        roi = record_roi(record)
+        size = tuple(config.get('size', ()))
+        origin = tuple(config.get('origin', ()))
+        image = np.asarray(averaged)
+        if (config.get('format') != 'BGR888' or size != (roi[2] - roi[0], roi[3] - roi[1])
+                or origin != roi[:2] or image.dtype != np.uint8
+                or image.shape != (size[1], size[0], 3)):
+            raise ValueError('Invalid averaged camera image')
+        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     config = settings.get('raw_camera_format', record.get('raw_camera_format', {}))
     fmt = str(config.get('format', ''))
     size = tuple(config.get('size', ()))

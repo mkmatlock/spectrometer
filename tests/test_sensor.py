@@ -11,6 +11,7 @@ import pygame
 from spectrometer.camera import CameraStream
 from spectrometer.config import SettingsStore
 from spectrometer.sensor import load_sensor
+from spectrometer.review import raw_rgb
 from spectrometer.ui import SpectrometerUI
 
 
@@ -62,8 +63,9 @@ class SensorTests(unittest.TestCase):
         self.assertEqual(self.ui._sensor.roi, (0, 60, 640, 240))
 
     def test_full_preview_color_and_cancel_keeps_settings_and_capture(self):
-        pixels, size, resolution = load_sensor(self.path)
+        pixels, size, resolution, bounds = load_sensor(self.path)
         self.assertEqual(resolution, (640, 480))
+        self.assertEqual(bounds, (0, 0, 640, 480))
         self.assertEqual(tuple(np.frombuffer(pixels, np.uint8)[:3]), (200, 80, 20))
         self.assertLessEqual(size[1], 256)
         self.open_sensor()
@@ -77,6 +79,27 @@ class SensorTests(unittest.TestCase):
         self.assertEqual(self.ui.mode, 'settings')
         self.assertEqual(SettingsStore(self.store.path).data['calibration']['sensor_area'], (0, 100, 600, 200))
         self.assertEqual(self.path.read_bytes(), self.original)
+
+    def test_averaged_roi_capture_remains_available_to_review_and_sensor(self):
+        roi = (100, 20, 600, 40)
+        bgr = np.empty((20, 500, 3), np.uint8)
+        bgr[:] = (10, 20, 30)
+        record = {
+            'spectrum_roi': roi,
+            'averaged_camera_output': bgr,
+            'instrument_settings': {
+                'raw_camera_format': {'size': (640, 480), 'format': 'SRGGB12_CSI2P'},
+                'averaged_camera_format': {
+                    'size': (500, 20), 'format': 'BGR888', 'origin': (100, 20),
+                    'sensor_size': (640, 480)}}}
+        path = Path(self.temp.name) / 'spectrum-2026-09-13-12-00-01.pkl'
+        path.write_bytes(pickle.dumps(record))
+        rgb = raw_rgb(record)
+        self.assertEqual(tuple(rgb[0, 0]), (30, 20, 10))
+        pixels, size, resolution, bounds = load_sensor(path)
+        self.assertEqual(resolution, (640, 480))
+        self.assertEqual(bounds, roi)
+        self.assertEqual(tuple(np.frombuffer(pixels, np.uint8)[:3]), (30, 20, 10))
 
     def test_accept_persists_and_updates_camera(self):
         self.open_sensor()

@@ -48,10 +48,10 @@ class CaptureTests(unittest.TestCase):
             stream._raw_config = {"size": (4056, 3040), "format": "SBGGR12_CSI2P", "stride": 6084}
             request = Mock()
             request.get_metadata.return_value = {"ExposureTime": 4321}
-            request.make_array.return_value = np.array([[1, 2, 3]], dtype=np.uint8)
-            frame = SpectrumFrame(b"", np.array([123, 456], dtype=np.int32))
+            averaged = np.full((2, 2, 3), (1, 2, 3), dtype=np.uint8)
+            frame = SpectrumFrame(b"", np.array([123, 456], dtype=np.int32), (0, 0, 2, 2))
             timestamp = datetime(2026, 9, 12, 20, 10, 0, tzinfo=timezone.utc)
-            stream._queue_capture(request, frame, timestamp)
+            stream._queue_capture(request, frame, timestamp, averaged)
             calibration['scale'][100] = 900
             calibration['future_calibration']['values'][0] = 9
             stream.set_calibration(calibration)
@@ -60,10 +60,13 @@ class CaptureTests(unittest.TestCase):
             path = next(Path(directory).glob("*.pkl"))
             with path.open("rb") as source:
                 record = pickle.load(source)
-            request.make_array.assert_called_once_with("raw")
+            request.make_array.assert_not_called()
             self.assertEqual(record["instrument_settings"], {
                 "exposure_time_us": 4321,
                 "raw_camera_format": stream._raw_config,
+                "averaged_camera_format": {"size": (2, 2), "format": "BGR888",
+                                             "origin": (0, 0), "sensor_size": (4056, 3040)},
+                "frame_averaging": 3,
                 "calibration_settings": {
                     "scale": {100: 700, 200: 500}, "sensor_area": frame.roi,
                     "future_calibration": {"values": [1, 2]}},
@@ -71,6 +74,8 @@ class CaptureTests(unittest.TestCase):
             })
             self.assertNotIn("raw_camera_format", record)
             self.assertNotIn('calibration_settings', record)
+            np.testing.assert_array_equal(record['averaged_camera_output'], averaged)
+            self.assertNotIn('raw_camera_output', record)
             self.assertEqual(record['instrument_settings']['calibration_settings'], {
                 'scale': {100: 700, 200: 500}, 'sensor_area': frame.roi,
                 'future_calibration': {'values': [1, 2]}})

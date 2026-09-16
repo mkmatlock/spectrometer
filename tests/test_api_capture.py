@@ -41,9 +41,10 @@ class APICaptureTests(unittest.TestCase):
                 if ready.wait(5):
                     request = Mock()
                     request.get_metadata.return_value = {'ExposureTime': 1234}
-                    request.make_array.return_value = np.array([[1, 2, 3]], np.uint8)
-                    camera._queue_capture(request, SpectrumFrame(b'abc', np.array([10, 20], np.int32)),
-                                          datetime(2026, 9, 14, tzinfo=timezone.utc))
+                    averaged = np.full((2, 2, 3), (1, 2, 3), np.uint8)
+                    camera._queue_capture(request, SpectrumFrame(
+                        b'abc', np.array([10, 20], np.int32), (0, 0, 2, 2)),
+                                          datetime(2026, 9, 14, tzinfo=timezone.utc), averaged)
             worker = threading.Thread(target=frame_callback)
             worker.start()
             try:
@@ -56,7 +57,9 @@ class APICaptureTests(unittest.TestCase):
                 record = pickle.loads(next(Path(directory).glob('spectrum-*.pkl')).read_bytes())
                 self.assertEqual(record['name'], 'Test lamp')
                 np.testing.assert_array_equal(record['spectrum_intensity'], [10, 20])
-                np.testing.assert_array_equal(record['raw_camera_output'], [[1, 2, 3]])
+                np.testing.assert_array_equal(record['averaged_camera_output'],
+                                              np.full((2, 2, 3), (1, 2, 3), np.uint8))
+                self.assertNotIn('raw_camera_output', record)
                 self.assertEqual(record['instrument_settings']['calibration_settings']['scale'], {100: 700, 200: 500})
             finally:
                 worker.join()

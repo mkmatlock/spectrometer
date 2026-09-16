@@ -1,4 +1,4 @@
-"""Read-only settings snapshots and bounded background network queries."""
+"""Settings display snapshots and bounded background network queries."""
 
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
@@ -35,20 +35,30 @@ class SettingsView:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='settings-network')
 
     def open(self, snapshot):
-        fps, size, exposure, averaging = (snapshot.get(key) for key in
-                                          ('frame_rate', 'resolution', 'exposure_us', 'frame_averaging'))
-        self.rows = [
-            ('Frame rate', f'{fps:g} fps' if fps is not None else 'Unavailable'),
-            ('Camera resolution', f'{size[0]} x {size[1]}' if size else 'Unavailable'),
-            ('Exposure time', f'{exposure / 1000:g} ms' if exposure is not None
-             else ('Auto (pending)' if snapshot else 'Unavailable')),
-            ('Frame averaging', str(averaging) if averaging is not None else 'Unavailable'),
+        self.rows = self.camera_rows(snapshot) + [
             ('IP address', 'Loading...'),
             ('Wi-Fi network', 'Loading...'),
         ]
         self.message = ''
         if self.future is None or self.future.done():
             self.future = self._executor.submit(network_status)
+
+    @staticmethod
+    def camera_rows(snapshot):
+        fps, size, exposure, averaging = (snapshot.get(key) for key in
+                                          ('frame_rate', 'resolution', 'exposure_us', 'frame_averaging'))
+        return [
+            ('Frame rate', f'{fps:g} fps' if fps is not None else 'Unavailable'),
+            ('Camera resolution', f'{size[0]} x {size[1]}' if size else 'Unavailable'),
+            ('Exposure time', f'{exposure / 1000:g} ms' if exposure is not None
+             else ('Auto' if snapshot else 'Unavailable')),
+            ('Frame averaging', str(averaging) if averaging is not None else 'Unavailable'),
+        ]
+
+    def update_camera(self, snapshot):
+        network = self.rows[4:] if len(self.rows) >= 6 else [
+            ('IP address', 'Loading...'), ('Wi-Fi network', 'Loading...')]
+        self.rows = self.camera_rows(snapshot) + network
 
     def poll(self):
         if self.future is None or not self.future.done():

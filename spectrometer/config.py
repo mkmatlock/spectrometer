@@ -15,6 +15,18 @@ DEFAULTS = {
                     'channel_ranges': {}},
 }
 
+# Native 12-bit IMX477 sensor modes.  The 1332x990 mode is 10-bit and is not
+# compatible with this application's packed 12-bit capture path.
+CAMERA_MODES = (
+    ((4056, 3040), 10),
+    ((2028, 1520), 40),
+    ((2028, 1080), 50),
+)
+
+
+def maximum_frame_rate(resolution):
+    return next((fps for size, fps in CAMERA_MODES if tuple(resolution) == size), 10)
+
 
 def validate(data):
     camera, calibration = data['camera'], data['calibration']
@@ -24,8 +36,8 @@ def validate(data):
     if exposure is not None and (type(exposure) is not int or exposure <= 0):
         raise ValueError('Exposure must be positive integer microseconds or None')
     averaging = camera.get('frame_averaging', 3)
-    if type(averaging) is not int or not 1 <= averaging <= 32:
-        raise ValueError('Frame averaging must be an integer from 1 to 32')
+    if type(averaging) is not int or not 1 <= averaging <= 10:
+        raise ValueError('Frame averaging must be an integer from 1 to 10')
     size, roi = camera['resolution'], calibration['sensor_area']
     if (not isinstance(size, (tuple, list)) or len(size) != 2 or any(type(v) is not int or v <= 0 for v in size)
             or size[0] > 4056 or size[1] > 3040):

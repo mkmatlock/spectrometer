@@ -53,13 +53,13 @@ Stop any separate camera server before starting this app; only one process can
 own the camera.
 
 ```sh
-python3 -m spectrometer --fps 30 --exposure-us 20000
+python3 -m spectrometer --fps 5 --frame-averaging 3 --exposure-us 20000
 ```
 
 Settings are loaded from `~/.spectrometer_config` on startup; the file is created
-with defaults (5 fps, 4056×3040, automatic exposure) when absent. Camera settings,
+with defaults (5 fps, three-frame averaging, 4056×3040, automatic exposure) when absent. Camera settings,
 calibration labels, and the sensor bounding box persist between runs. `--fps` and
-`--exposure-us` save new values; use `--auto-exposure` to restore automatic exposure.
+`--frame-averaging`, and `--exposure-us` save new values; use `--auto-exposure` to restore automatic exposure.
 
 Full-resolution IMX477 capture is
 limited to about 10 fps; the requested rate is capped to the sensor mode's limit.
@@ -100,7 +100,7 @@ Returns the full saved spectrum as JSON, including `filename`, name, timestamp,
 instrument settings, saved calibration, intensities, sensor area, and image data.
 Timestamps use ISO 8601; intensities are arrays; calibration pixel keys are
 strings. Binary image data uses base64, with `dtype` and `shape` also included
-for `raw_camera_output`. Returns 404 for an unknown ID or 500 if the matching
+for `raw_camera_output` in legacy captures or `averaged_camera_output` in new captures. Returns 404 for an unknown ID or 500 if the matching
 spectrum data cannot be returned.
 Only one full-spectrum transfer is processed at a time; another concurrent
 transfer returns 503 to protect memory on the Pi Zero.
@@ -114,7 +114,7 @@ Deletes the corresponding saved file. Returns 204 with an empty body on success,
 
 Returns the current saved configuration as a JSON object with two sections:
 
-- `camera`: `frame_rate`, `resolution`, and `exposure_us` (`null` means automatic).
+- `camera`: `frame_rate`, `frame_averaging`, `resolution`, and `exposure_us` (`null` means automatic).
 - `calibration`: `scale` pixel/value pairs and the `sensor_area` bounding box.
 
 ## Touch diagnostics

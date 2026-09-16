@@ -36,8 +36,8 @@ class CameraSettings:
             raise ValueError("Frame rate must be positive and finite")
         if self.exposure_us is not None and self.exposure_us <= 0:
             raise ValueError("Exposure must be a positive number of microseconds")
-        if type(self.frame_averaging) is not int or not 1 <= self.frame_averaging <= 32:
-            raise ValueError("Frame averaging must be an integer from 1 to 32")
+        if type(self.frame_averaging) is not int or not 1 <= self.frame_averaging <= 10:
+            raise ValueError("Frame averaging must be an integer from 1 to 10")
         roi_bytes = (self.roi[2] - self.roi[0]) * (self.roi[3] - self.roi[1]) * 3
         if roi_bytes * self.frame_averaging > 128 * 1024 * 1024:
             raise ValueError("Frame averaging window is too large for the sensor area")
@@ -200,7 +200,6 @@ class CameraStream:
                              'channel_ranges': {}}
 
     def __enter__(self):
-        started = time.monotonic()
         from picamera2 import Picamera2
         import cv2
 
@@ -208,58 +207,59 @@ class CameraStream:
 
         self._camera = Picamera2()
         try:
-            config = self._camera.create_video_configuration(
-                main={"size": self.settings.resolution, "format": "RGB888"},  # BGR in memory
-                raw={"size": self.settings.resolution, "format": "SRGGB12_CSI2P"},
-                sensor={"output_size": self.settings.resolution, "bit_depth": 12},
-                buffer_count=2, queue=False)
-            self._camera.configure(config)
-            # Query timing only after configuring the exact mode; sensor_modes
-            # probes/reconfigures every mode and is expensive on the Pi Zero.
-            minimum, maximum, _ = self._camera.camera_controls["FrameDurationLimits"]
-            requested = math.ceil(1_000_000 / self.settings.frame_rate)
-            duration = max(minimum, requested, self.settings.exposure_us or 0)
-            if requested < minimum:
-                LOGGER.warning("Requested %.2f fps; configured sensor mode permits %.2f fps",
-                               self.settings.frame_rate, 1_000_000 / minimum)
-            controls = {"FrameDurationLimits": (duration, duration),
-                        "AeEnable": self.settings.exposure_us is None}
-            if self.settings.exposure_us is not None:
-                controls["ExposureTime"] = self.settings.exposure_us
-            # Reject unsupported timing rather than silently letting libcamera
-            # clamp a user-specified exposure or very low frame rate.
-            for name, value in (("FrameDurationLimits", duration),
-                                ("ExposureTime", self.settings.exposure_us)):
-                if value is not None:
-                    low, high, _ = self._camera.camera_controls[name]
-                    if not low <= value <= high:
-                        raise ValueError("%s must be between %s and %s us" % (name, low, high))
-            actual = self._camera.camera_configuration()
-            raw = actual.get("raw") or {}
-            raw_size = tuple(raw.get("size", ()))
-            raw_format = str(raw.get("format", ""))
-            # libcamera may adjust Bayer order. That does not change resolution,
-            # bit depth, or packing, and the ISP handles colour conversion for
-            # the processed main stream used by our preview.
-            if raw_size != tuple(self.settings.resolution) or raw_format not in PACKED_12_FORMATS:
-                raise RuntimeError(
-                    f"Camera did not configure packed {self.settings.resolution[0]}:{self.settings.resolution[1]}:12:P mode; "
-                    "actual raw size=%r format=%r" % (raw_size, raw_format))
-            LOGGER.info("Configured raw stream: size=%s format=%s", raw_size, raw_format)
-            self._raw_config = dict(raw)
-            self._camera.set_controls(controls)
-            self._frame_duration_us = duration
-            self._camera.post_callback = self._on_frame
-            self._camera.start(show_preview=False)
-            self._started = True
-            LOGGER.info("Camera startup completed in %.2f s", time.monotonic() - started)
-            LOGGER.info("Camera mode %s:%s:12:P; target %.2f fps; exposure %s",
-                        *self.settings.resolution,
-                        1_000_000 / duration, self.settings.exposure_us or "automatic")
+            self._configure_and_start()
         except BaseException:
             self.close()
             raise
         return self
+
+    def _configure_and_start(self):
+        started = time.monotonic()
+        config = self._camera.create_video_configuration(
+            main={"size": self.settings.resolution, "format": "RGB888"},  # BGR in memory
+            raw={"size": self.settings.resolution, "format": "SRGGB12_CSI2P"},
+            sensor={"output_size": self.settings.resolution, "bit_depth": 12},
+            buffer_count=2, queue=False)
+        self._camera.configure(config)
+        # Query timing only after configuring the exact mode; sensor_modes
+        # probes/reconfigures every mode and is expensive on the Pi Zero.
+        minimum, maximum, _ = self._camera.camera_controls["FrameDurationLimits"]
+        requested = math.ceil(1_000_000 / self.settings.frame_rate)
+        duration = max(minimum, requested, self.settings.exposure_us or 0)
+        if requested < minimum:
+            LOGGER.warning("Requested %.2f fps; configured sensor mode permits %.2f fps",
+                           self.settings.frame_rate, 1_000_000 / minimum)
+        controls = {"FrameDurationLimits": (duration, duration),
+                    "AeEnable": self.settings.exposure_us is None}
+        if self.settings.exposure_us is not None:
+            controls["ExposureTime"] = self.settings.exposure_us
+        for name, value in (("FrameDurationLimits", duration),
+                            ("ExposureTime", self.settings.exposure_us)):
+            if value is not None:
+                low, high, _ = self._camera.camera_controls[name]
+                if not low <= value <= high:
+                    raise ValueError("%s must be between %s and %s us" % (name, low, high))
+        actual = self._camera.camera_configuration()
+        raw = actual.get("raw") or {}
+        raw_size = tuple(raw.get("size", ()))
+        raw_format = str(raw.get("format", ""))
+        if raw_size != tuple(self.settings.resolution) or raw_format not in PACKED_12_FORMATS:
+            raise RuntimeError(
+                f"Camera did not configure packed {self.settings.resolution[0]}:{self.settings.resolution[1]}:12:P mode; "
+                "actual raw size=%r format=%r" % (raw_size, raw_format))
+        LOGGER.info("Configured raw stream: size=%s format=%s", raw_size, raw_format)
+        self._raw_config = dict(raw)
+        self._camera.set_controls(controls)
+        self._frame_duration_us = duration
+        self._camera.post_callback = self._on_frame
+        self._camera.start(show_preview=False)
+        with self._lock:
+            self._started = True
+            self._error = None
+        LOGGER.info("Camera startup completed in %.2f s", time.monotonic() - started)
+        LOGGER.info("Camera mode %s:%s:12:P; target %.2f fps; exposure %s",
+                    *self.settings.resolution,
+                    1_000_000 / duration, self.settings.exposure_us or "automatic")
 
     def _on_frame(self, request):
         from picamera2 import MappedArray
@@ -521,6 +521,26 @@ class CameraStream:
             if capture:
                 self.request_capture(defer_save=True)
         return self._lifecycle.submit(self._lifecycle_call, restart)
+
+    def reconfigure(self, settings):
+        """Apply a complete configuration while acquisition is paused."""
+        if self._camera is None:
+            self.settings = settings
+            self._averager = FrameAverager(settings.frame_averaging)
+            return
+        self.pause()
+        self.settings = settings
+        self._averager = FrameAverager(settings.frame_averaging)
+        self._processing_workspace.clear()
+        self._logged_frame = False
+        self._last_callback = None
+        self._exposure_us = settings.exposure_us
+        self._configure_and_start()
+
+    def request_reconfigure(self, settings):
+        """Queue camera allocation and restart away from the UI thread."""
+        return self._lifecycle.submit(self._lifecycle_call,
+                                      lambda: self.reconfigure(settings))
 
     def request_cancel_capture(self):
         """Cancel naming safely after any active camera callback, then restart."""

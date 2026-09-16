@@ -47,8 +47,11 @@ def main():
     camera = None if args.no_camera else CameraStream(settings)
     with running_server(camera=camera, settings_store=store):
         SpectrometerUI(fullscreen=not args.windowed,
+                       camera_settings=deepcopy(store.data['camera']),
                        calibration_settings=deepcopy(store.data['calibration']),
                        on_calibration_changed=lambda values: store.update(calibration=values),
+                       on_camera_settings_changed=lambda camera_values, calibration=None:
+                       store.update(camera=camera_values, calibration=calibration),
                        camera=camera).run()
 
 

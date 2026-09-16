@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+from copy import deepcopy
 import pygame
 
 from .performance import PerformanceMetrics
@@ -29,7 +30,8 @@ class SpectrometerUI:
 
     def __init__(self, *, fullscreen=True, on_capture=None, on_review=None,
                  on_settings=None, camera=None, review_directory=None, calibration_settings=None,
-                 on_calibration_changed=None):
+                 on_calibration_changed=None, camera_settings=None,
+                 on_camera_settings_changed=None):
         self.fullscreen = fullscreen
         self.camera = camera
         self._camera_bar = None
@@ -62,12 +64,27 @@ class SpectrometerUI:
         self._peak_touch = None
         self._peaks = None
         self._review_peak_label = None
+        from .config import DEFAULTS
         self.calibration_settings = calibration_settings if calibration_settings is not None else {}
-        self.calibration_settings.setdefault("scale", {})
+        self.calibration_settings.setdefault('scale', {})
         if self.camera is not None:
             self.camera.set_calibration(self.calibration_settings)
         self._plot.set_calibration(self.calibration_settings['scale'])
         self._on_calibration_changed = on_calibration_changed
+        if camera_settings is None and camera is not None:
+            try:
+                camera_settings = camera.settings_snapshot()
+            except (AttributeError, TypeError):
+                camera_settings = None
+        self._camera_settings = deepcopy(camera_settings if isinstance(camera_settings, dict)
+                                         else DEFAULTS['camera'])
+        self._on_camera_settings_changed = on_camera_settings_changed
+        self._settings_dirty = False
+        self._settings_dialog = None
+        self._settings_value = None
+        self._settings_pressed = None
+        self._slider_dragging = False
+        self._resolution_selected = None
         self._keypad_open = False
         self._label_input = ""
         self._calibration_dialog = False
@@ -180,8 +197,9 @@ class SpectrometerUI:
                 self._redraw = True
 
     def _open_settings(self):
-        snapshot = self.camera.settings_snapshot() if self.camera is not None else {}
-        self.settings_view.open(snapshot)
+        self.settings_view.open(self._camera_settings)
+        self._settings_dirty = False
+        self._settings_dialog = None
         self.mode = "settings"
         self.buttons = [("Calibrate", pygame.Rect(8, 264, 228, 48), self._calibrate),
                         ("Back", pygame.Rect(244, 264, 228, 48), self._exit_settings)]
@@ -258,12 +276,123 @@ class SpectrometerUI:
         self.mode = "live"
         self.buttons = self._live_buttons
         if self.camera is not None:
-            self.camera.request_resume()
+            if self._settings_dirty:
+                from .camera import CameraSettings
+                from .config import DEFAULTS
+                values = dict(self._camera_settings,
+                              roi=tuple(self.calibration_settings.get(
+                                  'sensor_area', DEFAULTS['calibration']['sensor_area'])))
+                self.camera.request_reconfigure(CameraSettings(**values))
+            else:
+                self.camera.request_resume()
         self._redraw = True
 
     def _poll_settings(self):
         if self.mode == "settings" and self.settings_view.poll():
             self._redraw = True
+
+    @staticmethod
+    def _settings_row_rect(index):
+        return pygame.Rect(8, 32 + index * 37, 464, 35)
+
+    def _edit_setting(self, index):
+        if index not in range(4):
+            return
+        from .config import CAMERA_MODES, maximum_frame_rate
+        keys = ('frame_rate', 'resolution', 'exposure_us', 'frame_averaging')
+        self._settings_dialog = keys[index]
+        self._settings_message = ''
+        self._settings_pressed = None
+        self._slider_dragging = False
+        self._settings_buttons = self.buttons
+        if self._settings_dialog == 'resolution':
+            current = tuple(self._camera_settings['resolution'])
+            self._resolution_rows = [
+                (size, fps, pygame.Rect(64, 62 + row * 46, 352, 40))
+                for row, (size, fps) in enumerate(CAMERA_MODES)]
+            self._resolution_selected = next(
+                (row for row, (size, _, _) in enumerate(self._resolution_rows)
+                 if size == current), 0)
+        else:
+            if self._settings_dialog == 'frame_rate':
+                self._settings_min = 1
+                self._settings_max = maximum_frame_rate(self._camera_settings['resolution'])
+                self._settings_value = round(self._camera_settings['frame_rate'])
+            elif self._settings_dialog == 'exposure_us':
+                self._settings_min = 0
+                self._settings_max = max(1, int(1000 / self._camera_settings['frame_rate']))
+                exposure = self._camera_settings['exposure_us']
+                self._settings_value = 0 if exposure is None else round(exposure / 1000)
+            else:
+                self._settings_min, self._settings_max = 1, 10
+                self._settings_value = self._camera_settings['frame_averaging']
+            self._settings_value = max(self._settings_min,
+                                       min(self._settings_max, self._settings_value))
+        self.buttons = [('Accept', pygame.Rect(64, 224, 172, 48), self._accept_setting),
+                        ('Cancel', pygame.Rect(244, 224, 172, 48), self._cancel_setting)]
+        self._redraw = True
+
+    def _setting_slider_rect(self):
+        return pygame.Rect(72, 140, 336, 8)
+
+    def _set_slider_position(self, position):
+        track = self._setting_slider_rect()
+        fraction = max(0.0, min(1.0, (position[0] - track.left) / track.width))
+        self._settings_value = round(
+            self._settings_min + fraction * (self._settings_max - self._settings_min))
+        self._redraw = True
+
+    def _cancel_setting(self):
+        self._settings_dialog = None
+        self._settings_message = ''
+        self.buttons = self._settings_buttons
+        self._redraw = True
+
+    def _accept_setting(self):
+        from .config import DEFAULTS, maximum_frame_rate, validate
+        updated = deepcopy(self._camera_settings)
+        calibration = deepcopy(DEFAULTS['calibration'])
+        calibration.update(deepcopy(self.calibration_settings))
+        calibration_changed = False
+        key = self._settings_dialog
+        if key == 'resolution':
+            resolution = self._resolution_rows[self._resolution_selected][0]
+            updated['resolution'] = resolution
+            updated['frame_rate'] = min(updated['frame_rate'], maximum_frame_rate(resolution))
+            if resolution != tuple(self._camera_settings['resolution']):
+                calibration.update(scale={}, channel_ranges={},
+                                   sensor_area=(0, 0, resolution[0], resolution[1]))
+                calibration_changed = calibration != self.calibration_settings
+        elif key == 'frame_rate':
+            updated[key] = self._settings_value
+        elif key == 'exposure_us':
+            updated[key] = None if self._settings_value == 0 else self._settings_value * 1000
+        elif key == 'frame_averaging':
+            updated[key] = self._settings_value
+        else:
+            return
+        maximum_exposure = int(1_000_000 / updated['frame_rate'])
+        if updated['exposure_us'] is not None:
+            updated['exposure_us'] = min(updated['exposure_us'], maximum_exposure)
+        try:
+            validate({'camera': updated, 'calibration': calibration})
+            if self._on_camera_settings_changed is not None:
+                self._on_camera_settings_changed(
+                    updated, calibration if calibration_changed else None)
+        except (OSError, ValueError) as exc:
+            LOGGER.exception('Could not save camera setting')
+            self._settings_message = str(exc)
+            self._redraw = True
+            return
+        self._camera_settings = updated
+        if calibration_changed:
+            self.calibration_settings.clear()
+            self.calibration_settings.update(calibration)
+            if self.camera is not None:
+                self.camera.set_calibration(self.calibration_settings)
+        self.settings_view.update_camera(self._camera_settings)
+        self._settings_dirty = True
+        self._cancel_setting()
 
     def _open_review(self):
         self._live_view = (self._plot, self._camera_bar)
@@ -401,8 +530,7 @@ class SpectrometerUI:
         updated = dict(self.calibration_settings,
                        channel_ranges=dict(self._channel.ranges))
         camera_settings = dict(DEFAULTS['camera'])
-        if self.camera is not None:
-            camera_settings['resolution'] = self.camera.settings.resolution
+        camera_settings.update(self._camera_settings)
         try:
             validate({'camera': camera_settings, 'calibration': updated})
             if self._on_calibration_changed is not None:
@@ -422,8 +550,7 @@ class SpectrometerUI:
         roi = self._sensor.roi
         updated = dict(self.calibration_settings, sensor_area=roi)
         camera_settings = dict(DEFAULTS['camera'], resolution=self._sensor.resolution)
-        if self.camera is not None:
-            camera_settings['resolution'] = self.camera.settings.resolution
+        camera_settings.update(self._camera_settings)
         try:
             validate({'camera': camera_settings, 'calibration': updated})
             if self._on_calibration_changed is not None:
@@ -667,6 +794,10 @@ class SpectrometerUI:
         self._redraw = True
 
     def _pointer_motion(self, pointer, position):
+        if (self.mode == 'settings' and self._pointer == pointer
+                and self._settings_dialog not in (None, 'resolution')
+                and self._slider_dragging):
+            self._set_slider_position(position)
         if self.mode == 'channel' and self._pointer == pointer and self._channel.dragging is not None:
             self._channel.drag(position)
             self._redraw = True
@@ -727,6 +858,17 @@ class SpectrometerUI:
         if down and self._pointer is None:
             self._pointer = pointer
             self._pressed = self._button_at(position)
+            if self.mode == 'settings' and self._settings_dialog:
+                if self._settings_dialog == 'resolution':
+                    self._settings_pressed = next(
+                        (i for i, (_, _, rect) in enumerate(self._resolution_rows)
+                         if rect.collidepoint(position)), None)
+                elif self._setting_slider_rect().inflate(24, 36).collidepoint(position):
+                    self._slider_dragging = True
+                    self._set_slider_position(position)
+            elif self.mode == 'settings' and not self._calibration_dialog:
+                self._settings_pressed = next(
+                    (i for i in range(4) if self._settings_row_rect(i).collidepoint(position)), None)
             if self.mode == 'channel' and self._channel.start(position):
                 self._redraw = True
             if self.mode == 'sensor' and self._sensor.rect.collidepoint(position):
@@ -741,6 +883,27 @@ class SpectrometerUI:
             if self.mode == "review" and 34 <= position[1] < 244:
                 self._list_start = (position[1], self.review.offset)
         elif not down and self._pointer == pointer:
+            if self.mode == 'settings' and self._settings_dialog:
+                if self._settings_dialog == 'resolution' and self._settings_pressed is not None:
+                    index = self._settings_pressed
+                    if self._resolution_rows[index][2].collidepoint(position):
+                        self._resolution_selected = index
+                        self._redraw = True
+                    self._settings_pressed = None
+                    self._pointer = self._pressed = None
+                    return
+                if self._slider_dragging:
+                    self._set_slider_position(position)
+                    self._slider_dragging = False
+                    self._pointer = self._pressed = None
+                    return
+            elif self.mode == 'settings' and self._settings_pressed is not None:
+                index = self._settings_pressed
+                self._settings_pressed = None
+                self._pointer = self._pressed = None
+                if self._settings_row_rect(index).collidepoint(position):
+                    self._edit_setting(index)
+                return
             if self.mode == 'channel' and self._channel.dragging is not None:
                 self._channel.drag(position)
                 self._channel.stop()
@@ -892,6 +1055,8 @@ class SpectrometerUI:
             surface.blit(text, text.get_rect(center=(240, 142)))
         if self._calibration_dialog:
             self._draw_calibration_dialog(surface, font)
+        if self._settings_dialog:
+            self._draw_setting_dialog(surface, font)
         if self._filter_dialog:
             for label, rect, _ in self._saved_buttons:
                 pygame.draw.rect(surface, BUTTON, rect, border_radius=6)
@@ -1024,7 +1189,7 @@ class SpectrometerUI:
         title = self.settings_view.message or "Settings"
         surface.blit(small.render(title, True, TEXT), (8, 10))
         for index, (name, value) in enumerate(self.settings_view.rows):
-            rect = pygame.Rect(8, 32 + index * 37, 464, 35)
+            rect = self._settings_row_rect(index)
             pygame.draw.rect(surface, PANEL, rect)
             surface.blit(font.render(name, True, MUTED), (16, rect.y + 9))
             # Fit long SSIDs without allowing values to overlap option names.
@@ -1032,6 +1197,46 @@ class SpectrometerUI:
                 value = value[:-4] + "..." if len(value) > 4 else value[:-1]
             text = small.render(value, True, TEXT)
             surface.blit(text, text.get_rect(midright=(464, rect.centery)))
+
+    def _draw_setting_dialog(self, surface, font):
+        shade = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 170))
+        surface.blit(shade, (0, 0))
+        pygame.draw.rect(surface, PANEL, (48, 28, 384, 260), border_radius=8)
+        pygame.draw.rect(surface, BORDER, (48, 28, 384, 260), 1, border_radius=8)
+        titles = {'frame_rate': 'Frame rate', 'resolution': 'Camera resolution',
+                  'exposure_us': 'Exposure time', 'frame_averaging': 'Frame averaging'}
+        small = self._font(19)
+        title = self._settings_message or titles[self._settings_dialog]
+        surface.blit(small.render(title[:54], True, TEXT),
+                     small.render(title[:54], True, TEXT).get_rect(center=(240, 47)))
+        if self._settings_dialog == 'resolution':
+            for index, (size, maximum, rect) in enumerate(self._resolution_rows):
+                pygame.draw.rect(surface, BUTTON if index == self._resolution_selected else BACKGROUND,
+                                 rect, border_radius=4)
+                label = f'{size[0]} x {size[1]}  ({maximum} fps max)'
+                text = small.render(label, True, TEXT)
+                surface.blit(text, text.get_rect(center=rect.center))
+            return
+        if self._settings_dialog == 'exposure_us':
+            value = 'Auto' if self._settings_value == 0 else f'{self._settings_value} ms'
+        elif self._settings_dialog == 'frame_rate':
+            value = f'{self._settings_value} fps'
+        else:
+            value = str(self._settings_value)
+        value_text = font.render(value, True, TEXT)
+        surface.blit(value_text, value_text.get_rect(center=(240, 100)))
+        track = self._setting_slider_rect()
+        pygame.draw.rect(surface, BORDER, track, border_radius=4)
+        span = self._settings_max - self._settings_min
+        fraction = 0 if span == 0 else (self._settings_value - self._settings_min) / span
+        x = round(track.left + fraction * track.width)
+        pygame.draw.circle(surface, PRESSED, (x, track.centery), 13)
+        low = small.render('Auto' if self._settings_dialog == 'exposure_us' else str(self._settings_min),
+                           True, MUTED)
+        high = small.render(str(self._settings_max), True, MUTED)
+        surface.blit(low, low.get_rect(midtop=(track.left, 158)))
+        surface.blit(high, high.get_rect(midtop=(track.right, 158)))
 
     def run(self):
         """Use the directly connected LCD unless a desktop preview is requested."""

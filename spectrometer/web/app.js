@@ -69,7 +69,7 @@ function renderList() {
     button.type = 'button'; button.className = 'record';
     button.classList.toggle('selected', entry.id === state.selected);
     button.setAttribute('aria-pressed', String(entry.id === state.selected));
-    const name = document.createElement('span'); name.className = 'record-name'; name.textContent = entry.name || 'Unnamed spectrum';
+    const name = document.createElement('span'); name.className = 'record-name'; name.textContent = entry.name;
     const date = document.createElement('span'); date.className = 'record-date'; date.textContent = entry.timestamp || '';
     button.append(name, date);
     button.addEventListener('click', () => {
@@ -99,7 +99,7 @@ async function loadSpectrum(id) {
   state.prepared = prepared; state.id = id; state.selected = id;
   state.channels = ['Red', 'Green', 'Blue']; state.absorption = false; state.blackbody = false;
   state.peak = null; state.fit = null;
-  $('record-name').textContent = record.name || 'Unnamed spectrum';
+  $('record-name').textContent = record.name;
   const entry = state.entries.find(e => e.id === id);
   if (entry && !entry.timestamp) entry.timestamp = formatDate(record.timestamp);
   $('record-date').textContent = entry?.timestamp || formatDate(record.timestamp);

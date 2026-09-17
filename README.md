@@ -67,11 +67,13 @@ Longer exposures can reduce it further. Startup logs report the configured frame
 period and first-frame exposure. Use `--no-camera` for touch-only diagnostics or
 `--windowed --no-camera` for a desktop preview without Pi hardware.
 
-
 ## REST API
 
-The application serves the API at `http://<pi-address>:8000`.
-`python3 -m spectrometer.server` runs only the API, without a camera.
+Open `http://<pi-address>:8000/` for the browser interface: review, rename,
+delete, display modes, capture, and read-only settings. No frontend build or
+internet connection is required. Capture requires the camera to be running.
+The same service provides the API below.
+`python3 -m spectrometer.server` runs the web interface and API without a camera.
 Spectrum IDs are integer timestamps in milliseconds since the Unix epoch.
 
 ### GET /capture?name=<name>
@@ -100,7 +102,8 @@ Returns the full saved spectrum as JSON, including `filename`, name, timestamp,
 instrument settings, saved calibration, intensities, sensor area, and image data.
 Timestamps use ISO 8601; intensities are arrays; calibration pixel keys are
 strings. Binary image data uses base64, with `dtype` and `shape` also included
-for `raw_camera_output` in legacy captures or `averaged_camera_output` in new captures. Returns 404 for an unknown ID or 500 if the matching
+for `averaged_camera_output` (the cropped BGR image). `spectrum_maximum` stores
+the plot's intensity limit. Returns 404 for an unknown ID or 500 if the matching
 spectrum data cannot be returned.
 Only one full-spectrum transfer is processed at a time; another concurrent
 transfer returns 503 to protect memory on the Pi Zero.
@@ -110,12 +113,20 @@ transfer returns 503 to protect memory on the Pi Zero.
 Deletes the corresponding saved file. Returns 204 with an empty body on success,
 404 for an unknown ID, or 500 if deletion fails.
 
+### PATCH /spectrum/<id>
+
+Renames a spectrum. Send `Content-Type: application/json` and `{"name":"New name"}`
+(1–64 characters). Returns `{"id":123,"name":"New name"}`; the ID and recorded
+data are preserved. Returns 400 for an invalid name, 404 for an unknown ID,
+or 503 if another spectrum operation is in progress.
+
 ### GET /settings
 
-Returns the current saved configuration as a JSON object with two sections:
+Returns the current saved configuration and network status as a JSON object:
 
 - `camera`: `frame_rate`, `frame_averaging`, `resolution`, and `exposure_us` (`null` means automatic).
-- `calibration`: `scale` pixel/value pairs and the `sensor_area` bounding box.
+- `calibration`: `scale` pixel/value pairs, `sensor_area`, and `channel_ranges`.
+- `network`: `ip_address` and `wifi_ssid` (refreshed in the background).
 
 ## Touch diagnostics
 

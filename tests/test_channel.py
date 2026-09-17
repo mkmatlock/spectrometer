@@ -11,6 +11,7 @@ from spectrometer.camera import CameraSettings, SpectrumFrame, process_frame
 from spectrometer.channel import ChannelCalibration
 from spectrometer.config import SettingsStore
 from spectrometer.ui import SpectrometerUI
+from tests.spectrum_fixtures import spectrum_record
 
 
 class ChannelCalibrationTests(unittest.TestCase):
@@ -26,12 +27,13 @@ class ChannelCalibrationTests(unittest.TestCase):
         pygame.font.init()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'spectrum-2026-09-15-12-00-00.pkl'
-            path.write_bytes(__import__('pickle').dumps({'name': 'Calibration source'}))
+            path.write_bytes(__import__('pickle').dumps(spectrum_record(name='Calibration source')))
             store = SettingsStore(Path(directory) / '.spectrometer_config')
             camera = Mock()
             camera.settings = CameraSettings()
             ui = SpectrometerUI(
                 camera=camera, review_directory=directory,
+                camera_settings=deepcopy(store.data['camera']),
                 calibration_settings=deepcopy(store.data['calibration']),
                 on_calibration_changed=lambda data: store.update(calibration=data))
             values = np.arange(3500, dtype=np.int32)

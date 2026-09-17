@@ -9,8 +9,9 @@ import numpy as np
 import pygame
 
 from spectrometer.scale import PeakSelection, peak_indices
-from spectrometer.config import SettingsStore
+from spectrometer.config import DEFAULTS, SettingsStore
 from spectrometer.ui import SpectrometerUI
+from tests.spectrum_fixtures import spectrum_record
 
 
 class ScaleTests(unittest.TestCase):
@@ -78,11 +79,10 @@ class ScaleTests(unittest.TestCase):
             path = Path(directory) / 'spectrum-2026-09-13-12-00-00.pkl'
             values = np.zeros(3500, dtype=np.int32)
             values[1000], values[2500] = 50000, 30000
-            original = pickle.dumps({'spectrum_intensity': values,
-                                     'spectrum_bar': bytes(462 * 38 * 3)})
+            original = pickle.dumps(spectrum_record(spectrum_intensity=values))
             path.write_bytes(original)
             camera = Mock()
-            camera.settings_snapshot.return_value = {}
+            camera.settings_snapshot.return_value = deepcopy(DEFAULTS['camera'])
             ui = SpectrometerUI(camera=camera, review_directory=directory)
             try:
                 with patch('spectrometer.settings.network_status', return_value=('Unavailable', 'Unavailable')):

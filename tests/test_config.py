@@ -11,6 +11,7 @@ from spectrometer.config import DEFAULTS, SettingsStore
 from spectrometer.camera import process_frame
 from spectrometer.review import load_spectrum
 from spectrometer.ui import SpectrometerUI
+from tests.spectrum_fixtures import spectrum_record
 
 
 class ConfigTests(unittest.TestCase):
@@ -53,6 +54,19 @@ class ConfigTests(unittest.TestCase):
             SettingsStore(self.path)
         self.assertEqual(self.path.read_bytes(), b'broken pickle')
 
+    def test_incomplete_settings_are_rejected_without_default_merging(self):
+        for section, key in (('camera', 'frame_averaging'),
+                             ('calibration', 'channel_ranges'),
+                             ('calibration', 'sensor_area'),
+                             ('calibration', 'scale')):
+            data = deepcopy(DEFAULTS)
+            del data[section][key]
+            original = pickle.dumps(data)
+            self.path.write_bytes(original)
+            with self.assertRaises(ValueError):
+                SettingsStore(self.path)
+            self.assertEqual(self.path.read_bytes(), original)
+
     def test_label_accept_modify_delete_persist_and_failed_save_keeps_label(self):
         store = SettingsStore(self.path)
         ui = SpectrometerUI(calibration_settings=deepcopy(store.data['calibration']),
@@ -63,6 +77,7 @@ class ConfigTests(unittest.TestCase):
         values[1000] = 50000
         ui.mode = 'saved'
         ui._scale_active = True
+        ui._saved_buttons = []
         ui._reset_peaks(values)
         for label in ('532.1', '532.2'):
             ui._select_peak(tuple(ui._peaks.positions[0]))
@@ -87,14 +102,15 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(frame.intensity.shape, (500,))
         self.assertEqual(frame.intensity[100], 20 * 255 * 3)
         capture = self.path.parent / 'spectrum.pkl'
-        capture.write_bytes(pickle.dumps({'spectrum_roi': roi, 'spectrum_bar': frame.bar,
-                                         'spectrum_intensity': frame.intensity}))
+        capture.write_bytes(pickle.dumps(spectrum_record(
+            spectrum_roi=roi, spectrum_bar=frame.bar, spectrum_intensity=frame.intensity,
+            averaged_camera_output=image[20:40, 100:600].copy(),
+            spectrum_maximum=frame.maximum)))
         loaded = load_spectrum(capture)
         ui = SpectrometerUI()
         self.addCleanup(ui.review.close)
         self.addCleanup(ui.settings_view.close)
         ui._update_plot(loaded)
         ui._reset_peaks(loaded.intensity)
-        # Legacy captures without an intensity marker retain grayscale scaling.
-        self.assertEqual(ui._plot.maximum, 20 * 255)
+        self.assertEqual(ui._plot.maximum, 20 * 255 * 3)
         self.assertEqual(ui._peaks.select(ui._peaks.positions[0]), 200)

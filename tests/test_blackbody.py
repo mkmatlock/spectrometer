@@ -7,9 +7,9 @@ import numpy as np
 import pygame
 
 from spectrometer.blackbody import _shape, fit_blackbody
-from spectrometer.camera import BAR_SIZE
 from spectrometer.scale import WavelengthScale
 from spectrometer.ui import SpectrometerUI
+from tests.spectrum_fixtures import spectrum_record
 
 
 class BlackBodyTests(unittest.TestCase):
@@ -33,11 +33,9 @@ class BlackBodyTests(unittest.TestCase):
             scale = WavelengthScale(labels)
             wavelengths = scale.wavelength(np.arange(3500)) * 1e-9
             values = np.rint(1000 + 40000 * _shape(wavelengths, 5000)).astype(np.int32)
-            path.write_bytes(pickle.dumps({
-                'spectrum_intensity': values,
-                'spectrum_bar': bytes(BAR_SIZE[0] * BAR_SIZE[1] * 3),
-                'instrument_settings': {'calibration_settings': {'scale': labels}},
-            }))
+            record = spectrum_record(spectrum_intensity=values)
+            record['instrument_settings']['calibration_settings']['scale'] = labels
+            path.write_bytes(pickle.dumps(record))
             ui = SpectrometerUI(review_directory=directory)
             try:
                 ui._open_review()

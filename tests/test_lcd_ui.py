@@ -74,12 +74,15 @@ class LCDUITests(unittest.TestCase):
         surface = pygame.Surface((480, 320))
         surface.fill((255, 0, 0))
         backend.display.prepare_array.return_value = bytes(480 * 320 * 2)
+        backend._present_queue = queue.Queue(maxsize=1)
         backend.present(surface)
+        _, patches = backend._present_queue.get_nowait()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0][:4], (0, 0, 480, 320))
         width, height, pixels = backend.display.prepare_array.call_args.args[:3]
         self.assertEqual((width, height), (480, 320))
         self.assertEqual(pixels.shape, (320, 480, 3))
         self.assertEqual(tuple(pixels[-1, -1]), (255, 0, 0))
-        backend.display.write_prepared.assert_called_once()
 
     def test_slow_spi_worker_does_not_block_present_caller(self):
         backend = LCDBackend()

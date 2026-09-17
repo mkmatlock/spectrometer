@@ -1,17 +1,20 @@
 import unittest
+from copy import deepcopy
 
 import numpy as np
 import pygame
 
 from spectrometer.ui import SpectrometerUI
+from spectrometer.config import DEFAULTS
 
 
 class PeakLabelTests(unittest.TestCase):
     def setUp(self):
-        self.settings = {}
+        self.settings = deepcopy(DEFAULTS['calibration'])
         self.ui = SpectrometerUI(calibration_settings=self.settings)
         self.ui.mode = 'saved'
         self.ui._scale_active = True
+        self.ui._saved_buttons = []
         values = np.zeros(3500, np.int32)
         values[1000], values[2500] = 50000, 40000
         self.ui._plot.update(values)
@@ -33,7 +36,7 @@ class PeakLabelTests(unittest.TestCase):
         for key in '532.1':
             self.ui._label_key(key)
         self.ui._accept_label()
-        self.assertEqual(self.settings, {'scale': {1000: 532.1}})
+        self.assertEqual(self.settings['scale'], {1000: 532.1})
         self.assertFalse(self.ui._keypad_open)
         self.assertFalse(self.ui._peak_dialog)
         self.assertIsNone(self.ui._peaks.marker)

@@ -95,12 +95,14 @@ function spectrum(name = 'Lamp', calibrated = true) {
   return {
     name, timestamp: '2026-09-16T12:00:00+00:00', spectrum_roi: [0, 0, 9, 2],
     spectrum_intensity: values.map(v => v * 12),
+    spectrum_maximum: 2 * 255 * 3,
+    spectrum_bar: {encoding: 'base64', data: Buffer.from(new Uint8Array(462 * 38 * 3).fill(11)).toString('base64')},
     averaged_camera_output: {encoding: 'base64', dtype: 'uint8', shape: [2, 9, 3],
       data: Buffer.from(pixels).toString('base64')},
     instrument_settings: {
       averaged_camera_format: {format: 'BGR888', size: [9, 2], origin: [0, 0]},
       intensity_calculation: 'rgb_channel_sum',
-      calibration_settings: {scale: calibrated ? {0: 800, 8: 400} : {}},
+      calibration_settings: {scale: calibrated ? {0: 800, 8: 400} : {}, channel_ranges: {}},
     },
   };
 }

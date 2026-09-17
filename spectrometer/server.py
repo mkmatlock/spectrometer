@@ -45,13 +45,10 @@ def json_value(value):
 def spectrum_response(path, record):
     """Full JSON representation of a saved spectrum."""
     result = dict(record, filename=path.name)
-    for key in ('raw_camera_output', 'averaged_camera_output'):
-        if key not in record:
-            continue
-        image = record[key]
-        result[key] = {
-            'encoding': 'base64', 'dtype': str(image.dtype), 'shape': list(image.shape),
-            'data': base64.b64encode(image.tobytes()).decode('ascii')}
+    image = record['averaged_camera_output']
+    result['averaged_camera_output'] = {
+        'encoding': 'base64', 'dtype': str(image.dtype), 'shape': list(image.shape),
+        'data': base64.b64encode(image.tobytes()).decode('ascii')}
     return result
 
 
@@ -241,8 +238,8 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-store')
             self.end_headers()
             # SocketWriter.write uses sendall: its timeout covers the entire
-            # call, not just time without progress. Legacy full-sensor images
-            # take longer than ten seconds over Wi-Fi. Bound each write so an
+            # call, not just time without progress. Large images can take
+            # longer than ten seconds over Wi-Fi. Bound each write so an
             # active transfer can continue while stalled clients still time out.
             view = memoryview(data)
             for offset in range(0, len(view), RESPONSE_CHUNK_SIZE):
@@ -302,7 +299,7 @@ def running_server(host='0.0.0.0', port=8000, camera=None, capture_directory=Non
         server.capture_directory = Path(capture_directory if capture_directory is not None else
                                         getattr(camera, "_capture_directory", Path.home()))
         server.catalog = SpectrumCatalog(server.capture_directory, persistent=True)
-        # Complete legacy discovery before accepting requests. Thereafter the
+        # Index captures before accepting requests. Thereafter the
         # request path is a metadata-only SQLite query.
         server.catalog.reconcile_all()
         # Fault the small catalog and JSON encoder into memory before the

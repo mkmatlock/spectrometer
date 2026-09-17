@@ -35,7 +35,7 @@ def validate(data):
         raise ValueError('Frame rate must be positive and finite')
     if exposure is not None and (type(exposure) is not int or exposure <= 0):
         raise ValueError('Exposure must be positive integer microseconds or None')
-    averaging = camera.get('frame_averaging', 3)
+    averaging = camera['frame_averaging']
     if type(averaging) is not int or not 1 <= averaging <= 10:
         raise ValueError('Frame averaging must be an integer from 1 to 10')
     size, roi = camera['resolution'], calibration['sensor_area']
@@ -54,7 +54,7 @@ def validate(data):
         if (type(pixel) is not int or not 0 <= pixel < size[0]
                 or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0):
             raise ValueError('Invalid scale calibration pair')
-    ranges = calibration.get('channel_ranges', {})
+    ranges = calibration['channel_ranges']
     if not isinstance(ranges, dict) or any(name not in ('Red', 'Green', 'Blue') for name in ranges):
         raise ValueError('Channel ranges must contain only Red, Green, and Blue')
     for extent in ranges.values():
@@ -67,17 +67,15 @@ def validate(data):
 class SettingsStore:
     def __init__(self, path=None):
         self.path = Path.home() / '.spectrometer_config' if path is None else Path(path)
-        self.data = deepcopy(DEFAULTS)
         if self.path.exists():
             try:
                 with self.path.open('rb') as source:
-                    saved = pickle.load(source)
-                for section in DEFAULTS:
-                    self.data[section].update(saved.get(section, {}))
+                    self.data = pickle.load(source)
                 validate(self.data)
             except Exception as exc:
                 raise ValueError(f'Cannot load settings from {self.path}: {exc}') from exc
         else:
+            self.data = deepcopy(DEFAULTS)
             self._write(self.data)
 
     def update(self, *, camera=None, calibration=None):

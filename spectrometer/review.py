@@ -8,18 +8,17 @@ import pickle
 
 import numpy as np
 
-from .camera import BAR_SIZE, PACKED_12_FORMATS, SENSOR_SIZE, SPECTRUM_ROI, SpectrumFrame
+from .camera import BAR_SIZE, SENSOR_SIZE, SpectrumFrame
 from .catalog import SpectrumCatalog
 
 
 def record_calibration(record):
-    """Read nested calibration, with support for the original capture layout."""
-    return deepcopy(record.get('instrument_settings', {}).get(
-        'calibration_settings', record.get('calibration_settings', {})))
+    """Return the calibration saved with this capture."""
+    return deepcopy(record['instrument_settings']['calibration_settings'])
 
 
 def record_roi(record):
-    roi = tuple(record.get('spectrum_roi', SPECTRUM_ROI))
+    roi = tuple(record['spectrum_roi'])
     if (len(roi) != 4 or any(type(v) is not int or v % 2 for v in roi)
             or not 0 <= roi[0] < roi[2] <= SENSOR_SIZE[0]
             or not 0 <= roi[1] < roi[3] <= SENSOR_SIZE[1]
@@ -37,59 +36,29 @@ def load_spectrum(path):
     if (intensity.shape != (roi[2] - roi[0],) or not np.issubdtype(intensity.dtype, np.number)
             or not np.all(np.isfinite(intensity))):
         raise ValueError('Invalid spectrum intensity data')
-    bar = record.get('spectrum_bar')
-    if bar is None:
-        bar = raw_bar(record)
+    bar = record['spectrum_bar']
     if not isinstance(bar, bytes) or len(bar) != BAR_SIZE[0] * BAR_SIZE[1] * 3:
         raise ValueError('Invalid camera bar data')
-    settings = record.get('instrument_settings', {})
-    channels = 3 if settings.get('intensity_calculation') == 'rgb_channel_sum' else 1
-    maximum = (roi[3] - roi[1]) * 255 * channels
+    maximum = record['spectrum_maximum']
+    if (not isinstance(maximum, (int, float)) or isinstance(maximum, bool)
+            or not np.isfinite(maximum) or maximum <= 0):
+        raise ValueError('Invalid spectrum maximum')
     return SpectrumFrame(bar, intensity.copy(), roi, record_calibration(record), maximum)
 
 
 def raw_rgb(record):
-    """Load an averaged BGR ROI or reconstruct older packed Bayer data."""
+    """Decode the saved averaged BGR ROI for display and channel processing."""
     import cv2
 
-    settings = record.get('instrument_settings', {})
-    averaged = record.get('averaged_camera_output')
-    if averaged is not None:
-        config = settings.get('averaged_camera_format', {})
-        roi = record_roi(record)
-        size = tuple(config.get('size', ()))
-        origin = tuple(config.get('origin', ()))
-        image = np.asarray(averaged)
-        if (config.get('format') != 'BGR888' or size != (roi[2] - roi[0], roi[3] - roi[1])
-                or origin != roi[:2] or image.dtype != np.uint8
-                or image.shape != (size[1], size[0], 3)):
-            raise ValueError('Invalid averaged camera image')
-        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    config = settings.get('raw_camera_format', record.get('raw_camera_format', {}))
-    fmt = str(config.get('format', ''))
-    size = tuple(config.get('size', ()))
-    if (fmt not in PACKED_12_FORMATS or len(size) != 2
-            or any(type(v) is not int or v <= 0 for v in size)):
-        raise ValueError('Unsupported raw camera format')
-    raw = np.asarray(record['raw_camera_output'])
-    stride = int(config.get('stride', size[0] * 3 // 2))
-    if raw.dtype != np.uint8 or raw.size != size[1] * stride:
-        raise ValueError('Invalid packed camera buffer')
-    x0, y0, x1, y1 = record_roi(record)
-    if x1 > size[0] or y1 > size[1]:
-        raise ValueError("Sensor area exceeds captured image")
-    triples = raw.reshape(size[1], stride)[y0:y1, x0 * 3 // 2:x1 * 3 // 2].reshape(y1-y0, -1, 3)
-    # For an 8-bit preview the top eight bits are already the first two bytes
-    # of each CSI2 packed pair. The third byte contains the low four bits.
-    bayer = np.empty((y1-y0, x1-x0), dtype=np.uint8)
-    bayer[:, 0::2], bayer[:, 1::2] = triples[:, :, 0], triples[:, :, 1]
-    rgb = cv2.cvtColor(bayer, getattr(cv2, 'COLOR_Bayer' + fmt[1:5] + '2RGB'))
-    return rgb
-
-
-def raw_bar(record):
-    import cv2
-    return cv2.resize(raw_rgb(record), BAR_SIZE, interpolation=cv2.INTER_AREA).tobytes()
+    config = record['instrument_settings']['averaged_camera_format']
+    roi = record_roi(record)
+    size, origin = tuple(config['size']), tuple(config['origin'])
+    image = np.asarray(record['averaged_camera_output'])
+    if (config['format'] != 'BGR888' or size != (roi[2] - roi[0], roi[3] - roi[1])
+            or origin != roi[:2] or image.dtype != np.uint8
+            or image.shape != (size[1], size[0], 3)):
+        raise ValueError('Invalid averaged camera image')
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
 def load_channels(path):
@@ -132,7 +101,7 @@ class ReviewList:
         self.loaded_path = None
         self._loading_path = None
         self.filter_future = None
-        self.filter_channel = "All"
+        self.filter_channel = ('Red', 'Green', 'Blue')
         self._wanted_channel = None
         self._channel_cache = {}
         self.blackbody_future = None
@@ -234,7 +203,7 @@ class ReviewList:
                 self._channel_cache = {}
             else:
                 self._channel_cache = {'All': result}
-                self.filter_channel = 'All'
+                self.filter_channel = ('Red', 'Green', 'Blue')
             self.cancel_filter()
             self.message = ''
             return result
@@ -286,12 +255,9 @@ class ReviewList:
         maximum = (original.roi[3] - original.roi[1]) * 255 * len(frames)
         return SpectrumFrame(bar, totals, original.roi, original.calibration, maximum)
 
-    def request_filter(self, channel):
-        if channel not in ('Red', 'Green', 'Blue', 'All'):
-            raise ValueError('Unknown channel')
-        return self.request_channels(('Red', 'Green', 'Blue') if channel == 'All' else (channel,))
-
     def request_channels(self, channels):
+        if len(set(channels)) != len(channels) or any(name not in ('Red', 'Green', 'Blue') for name in channels):
+            raise ValueError('Unknown or duplicate channel')
         self._wanted_channel = tuple(channels)
         self.message = ''
         if len(channels) in (0, 3) or all(name in self._channel_cache for name in channels):

@@ -197,7 +197,6 @@ class CameraStream:
         self._capture_busy = False
         self._api_capture = None
         self._capture_draft = None
-        self._defer_save = False
         self._calibration = {'scale': {}, 'sensor_area': self.settings.roi,
                              'channel_ranges': {}}
 
@@ -276,7 +275,7 @@ class CameraStream:
             self._capture_pending = False
         try:
             with self._lock:
-                channel_ranges = deepcopy(self._calibration.get('channel_ranges', {}))
+                channel_ranges = deepcopy(self._calibration['channel_ranges'])
             with MappedArray(request, "main", write=False) as mapped:
                 if self._sensor_preview_enabled:
                     import cv2
@@ -325,13 +324,12 @@ class CameraStream:
                     self._capture_busy = False
                     self._fail_api_capture(exc)
 
-    def request_capture(self, defer_save=False):
-        """Save the next frame; allow only one capture in flight on the Pi Zero."""
+    def request_capture(self):
+        """Reserve a naming draft; allow only one capture in flight on the Pi Zero."""
         with self._lock:
             if not self._started or self._capture_busy or self._sensor_preview_enabled:
                 LOGGER.info("Capture unavailable: camera stopped or a capture is still saving")
                 return False
-            self._defer_save = defer_save
             self._capture_pending = self._capture_busy = True
         LOGGER.info("Capture requested")
         return True
@@ -343,7 +341,6 @@ class CameraStream:
                 return None
             future = Future()
             self._api_capture = (name, future)
-            self._defer_save = False
             self._capture_pending = self._capture_busy = True
             return future
 
@@ -403,6 +400,7 @@ class CameraStream:
                 },
                 "averaged_camera_output": averaged_image,
                 "spectrum_intensity": frame.intensity.copy(),
+                "spectrum_maximum": frame.maximum,
                 "spectrum_bar": frame.bar,
                 "spectrum_roi": frame.roi,
             }
@@ -411,11 +409,9 @@ class CameraStream:
             if api is not None:
                 record['name'] = api[0]
                 self._writer.submit(self._save_api_capture, record, api[1])
-            elif self._defer_save:
+            else:
                 with self._lock:
                     self._capture_draft = record
-            else:
-                self._writer.submit(self._save_capture, record)
         except Exception as exc:
             LOGGER.exception("Could not prepare spectrum capture")
             with self._lock:
@@ -437,18 +433,6 @@ class CameraStream:
         from .capture import save_capture
         named = dict(record, name=name)
         return self._writer.submit(save_capture, named, self._capture_directory)
-
-    def _save_capture(self, record):
-        from .capture import save_capture
-
-        try:
-            path = save_capture(record, self._capture_directory)
-            LOGGER.info("Saved spectrum to %s", path)
-        except Exception:
-            LOGGER.exception("Could not save spectrum capture")
-        finally:
-            with self._lock:
-                self._capture_busy = False
 
     def poll(self):
         """Return the newest bar and spectrum together, once per frame."""
@@ -531,7 +515,7 @@ class CameraStream:
         def restart():
             self.resume()
             if capture:
-                self.request_capture(defer_save=True)
+                self.request_capture()
         return self._lifecycle.submit(self._lifecycle_call, restart)
 
     def reconfigure(self, settings):

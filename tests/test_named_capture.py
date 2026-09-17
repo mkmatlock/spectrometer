@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import pickle
 import tempfile
@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import numpy as np
 import pygame
 
-from spectrometer.camera import CameraStream, SpectrumFrame
+from spectrometer.camera import BAR_SIZE, CameraStream, SpectrumFrame
 from spectrometer.ui import SpectrometerUI
 
 
@@ -19,7 +19,8 @@ class NamedCaptureTests(unittest.TestCase):
                 camera = CameraStream(capture_directory=directory)
                 camera._camera = Mock()
                 camera._started = True
-                camera._raw_config = {}
+                camera._raw_config = {'size': (4056, 3040),
+                                      'format': 'SBGGR12_CSI2P', 'stride': 6112}
                 ui = SpectrometerUI(camera=camera)
                 try:
                     ui._name_capture()
@@ -36,9 +37,12 @@ class NamedCaptureTests(unittest.TestCase):
                     ui._capture_key('1')
                     request = Mock()
                     request.get_metadata.return_value = {'ExposureTime': 100}
-                    frame = SpectrumFrame(b'', np.array([123, 456], np.int32), (0, 0, 2, 2))
-                    camera._queue_capture(request, frame, datetime(2026, 9, 14, 12, 0, 0),
-                                          np.zeros((2, 2, 3), np.uint8))
+                    intensity = np.arange(500, dtype=np.int32)
+                    frame = SpectrumFrame(bytes(BAR_SIZE[0] * BAR_SIZE[1] * 3), intensity.copy(),
+                                          (0, 0, 500, 2), maximum=2 * 255 * 3)
+                    camera._queue_capture(request, frame, datetime(2026, 9, 14, 12, 0, 0,
+                                                                  tzinfo=timezone.utc),
+                                          np.zeros((2, 500, 3), np.uint8))
                     frame.intensity[:] = 0
                     ui._poll_capture()
                     camera._camera.stop.assert_called_once()
@@ -51,7 +55,8 @@ class NamedCaptureTests(unittest.TestCase):
                         ui._poll_capture()
                         record = pickle.loads(next(Path(directory).glob('*.pkl')).read_bytes())
                         self.assertEqual(record['name'], 'Test 1')
-                        np.testing.assert_array_equal(record['spectrum_intensity'], [123, 456])
+                        np.testing.assert_array_equal(record['spectrum_intensity'], intensity)
+                        self.assertEqual(record['spectrum_maximum'], frame.maximum)
                     else:
                         ui._cancel_capture()
                         self.assertEqual(list(Path(directory).glob('*.pkl')), [])

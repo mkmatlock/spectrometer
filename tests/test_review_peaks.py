@@ -7,6 +7,8 @@ import numpy as np
 
 from spectrometer.camera import SpectrumFrame
 from spectrometer.ui import SpectrometerUI
+from spectrometer.config import DEFAULTS
+from tests.spectrum_fixtures import spectrum_record
 
 
 class ReviewPeakTests(unittest.TestCase):
@@ -15,7 +17,7 @@ class ReviewPeakTests(unittest.TestCase):
             values = np.zeros(3500, dtype=np.int32)
             values[900], values[2400] = 50000, 40000
             bar = bytes(462 * 38 * 3)
-            data = pickle.dumps({'spectrum_intensity': values, 'spectrum_bar': bar})
+            data = pickle.dumps(spectrum_record(spectrum_intensity=values, spectrum_bar=bar))
             path = Path(directory) / 'spectrum-2026-09-13-12-00-00.pkl'
             path.write_bytes(data)
             ui = SpectrometerUI(review_directory=directory)
@@ -40,10 +42,11 @@ class ReviewPeakTests(unittest.TestCase):
                 self.assertEqual(ui._review_peak_label, 'Pixel 2400')
                 filtered = np.zeros(3500, dtype=np.int32)
                 filtered[1800] = 30000
-                ui._apply_filter(SpectrumFrame(bar, filtered))
+                ui._apply_filter(SpectrumFrame(bar, filtered, calibration=DEFAULTS['calibration']))
                 self.assertIsNone(ui._review_peak_label)
                 np.testing.assert_array_equal(ui._peaks.indices, [1800])
-                ui._apply_filter(SpectrumFrame(bar, np.zeros(3500, dtype=np.int32)))
+                ui._apply_filter(SpectrumFrame(bar, np.zeros(3500, dtype=np.int32),
+                                               calibration=DEFAULTS['calibration']))
                 ui._select_peak((100, 100))
                 self.assertEqual(ui._review_peak_label, 'No peaks found')
                 self.assertFalse(ui._peak_dialog)

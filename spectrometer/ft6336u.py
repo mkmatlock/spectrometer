@@ -19,15 +19,9 @@ class ft6336u():
         self.GPIO = RPi.GPIO
         self.GPIO.setmode(self.GPIO.BCM)
         self.GPIO.setwarnings(False)
-        # #Initialize I2C
         self.I2C = smbus.SMBus(1)
-        # self.GPIO.setup(TP_INT, self.GPIO.IN,self.GPIO.PUD_UP)
         self.GPIO.setup(TP_RST, self.GPIO.OUT)
-        # self.GPIO.add_event_detect(TP_INT,self.GPIO.FALLING,self.Int_Callback,5) 
-        # pass
         self.GPIO_TP_INT = Button(TP_INT)                                                  # 使用GPIO Zero库中的Button类
-        # self.GPIO_TP_RST = DigitalOutputDevice(TP_RST,active_high = True,initial_value =True)   # 使用GPIO Zero库中的DigitalOutputDevice类
-        # self.GPIO_TP_INT.when_pressed = self.Int_Callback  # 中断函数
         
         self.coordinates = [{"x": 0, "y": 0} for _ in range(FT6336U_LCD_TOUCH_MAX_POINTS)]
         self.point_count = 0
@@ -36,10 +30,6 @@ class ft6336u():
         self.I2C.write_byte_data(FT6336U_ADDRESS, 0x00, 0x00)
         self.I2C.write_byte_data(FT6336U_ADDRESS, 0xA4, 0x00)
     
-    def Int_Callback(self):
-        self.read_touch_data()
-    
-    #Reset  复位    
     def touch_rst(self):
         self.GPIO.output(TP_RST, 0)  
         time.sleep(1 / 1000.0)
@@ -47,9 +37,6 @@ class ft6336u():
         time.sleep(50 / 1000.0)
         
         
-    def write_cmd(self, cmd):
-        self.I2C.write_byte(FT6336U_ADDRESS, cmd)
-
     def read_bytes(self, reg_addr, length):
         # 发送寄存器地址并读取多个字节
         data = self.I2C.read_i2c_block_data(FT6336U_ADDRESS, reg_addr, length)

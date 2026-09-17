@@ -15,7 +15,7 @@ class SpectrumPlot:
     def __init__(self, roi=SPECTRUM_ROI, maximum=None):
         self.roi = tuple(roi)
         x0, y0, x1, y1 = self.roi
-        self.maximum = maximum or (y1 - y0) * 255
+        self.maximum = maximum or (y1 - y0) * 255 * 3
         self.edges = np.linspace(0, x1 - x0, self.AREA.width + 1, dtype=np.int32)
         self._xs = np.repeat(np.arange(self.AREA.left, self.AREA.right), 2)
         self._background = None

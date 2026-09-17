@@ -8,31 +8,34 @@ import numpy as np
 
 from spectrometer.review import load_channels, record_calibration
 from spectrometer.ui import SpectrometerUI
+from spectrometer.config import DEFAULTS
+from copy import deepcopy
+from tests.spectrum_fixtures import spectrum_record
 
 
 class CaptureCalibrationTests(unittest.TestCase):
-    def test_calibration_layout_compatibility_and_nested_precedence(self):
-        old = {'scale': {100: 700, 200: 500}}
-        self.assertEqual(record_calibration({'calibration_settings': old}), old)
-        record = {'calibration_settings': old,
-                  'instrument_settings': {'calibration_settings': {'scale': {}}}}
-        self.assertEqual(record_calibration(record), {'scale': {}})
-        self.assertEqual(record_calibration({}), {})
+    def test_saved_calibration_is_copied_without_mutating_capture(self):
+        record = spectrum_record()
+        saved = record['instrument_settings']['calibration_settings']
+        saved['scale'] = {100: 700, 200: 500}
+        calibration = record_calibration(record)
+        self.assertEqual(calibration, saved)
+        calibration['scale'][100] = 800
+        self.assertEqual(saved['scale'][100], 700)
 
 
-    def test_review_uses_saved_scale_filters_preserve_it_and_legacy_uses_pixels(self):
+    def test_review_uses_saved_scale_filters_preserve_it_and_uncalibrated_uses_pixels(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'spectrum-2026-09-13-12-00-00.pkl'
             values = np.zeros(3500, np.int32)
             values[1500] = 50000
-            record = {'spectrum_intensity': values, 'spectrum_bar': bytes(462 * 38 * 3),
-                      'calibration_settings': {'scale': {1000: 700, 2000: 500},
-                                               'sensor_area': (0, 1550, 3500, 1800)}}
-            record['instrument_settings'] = {'calibration_settings': record.pop('calibration_settings')}
+            record = spectrum_record(spectrum_intensity=values)
+            record['instrument_settings']['calibration_settings']['scale'] = {1000: 700, 2000: 500}
             path.write_bytes(pickle.dumps(record))
             original = path.read_bytes()
             ui = SpectrometerUI(review_directory=directory,
-                                calibration_settings={'scale': {1000: 900, 2000: 800}})
+                                calibration_settings=dict(deepcopy(DEFAULTS['calibration']),
+                                                          scale={1000: 900, 2000: 800}))
             try:
                 ui._open_review()
                 ui.review.selected = 0
@@ -52,7 +55,7 @@ class CaptureCalibrationTests(unittest.TestCase):
                 ui._update_plot(ui.review._channel_cache['All'])
                 self.assertIsNone(ui._plot.scale)
                 ui._scale_active = False
-                del record['instrument_settings']['calibration_settings']
+                record['instrument_settings']['calibration_settings']['scale'] = {}
                 path.write_bytes(pickle.dumps(record))
                 ui._review_list()
                 ui.review.display()

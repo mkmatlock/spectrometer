@@ -10,7 +10,7 @@ class PlotTests(unittest.TestCase):
     def test_narrow_peak_and_dark_trough_survive_screen_reduction(self):
         plot = SpectrumPlot()
         values = np.full(3500, 10000, dtype=np.int32)
-        values[3] = 63750
+        values[3] = 191250
         values[4] = 0
         plot.update(values)
         self.assertEqual(plot.points[-2:], [[462, 157], [462, 28]])
@@ -46,7 +46,7 @@ class PlotTests(unittest.TestCase):
             plot.draw(surface, (0, 0))
             background = plot._background
             self.assertEqual(surface.get_at((100, 157))[:3], plot.TRACE)
-            plot.update(np.full(3500, 63750, dtype=np.int32))
+            plot.update(np.full(3500, 191250, dtype=np.int32))
             plot.draw(surface, (0, 0))
             self.assertIs(plot._background, background)
             self.assertEqual(surface.get_at((100, 28))[:3], plot.TRACE)

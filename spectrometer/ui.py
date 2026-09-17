@@ -66,19 +66,16 @@ class SpectrometerUI:
         self._peaks = None
         self._review_peak_label = None
         from .config import DEFAULTS
-        self.calibration_settings = calibration_settings if calibration_settings is not None else {}
-        self.calibration_settings.setdefault('scale', {})
+        self.calibration_settings = (calibration_settings if calibration_settings is not None
+                                     else deepcopy(DEFAULTS['calibration']))
         if self.camera is not None:
             self.camera.set_calibration(self.calibration_settings)
         self._plot.set_calibration(self.calibration_settings['scale'])
         self._on_calibration_changed = on_calibration_changed
         if camera_settings is None and camera is not None:
-            try:
-                camera_settings = camera.settings_snapshot()
-            except (AttributeError, TypeError):
-                camera_settings = None
-        self._camera_settings = deepcopy(camera_settings if isinstance(camera_settings, dict)
-                                         else DEFAULTS['camera'])
+            camera_settings = camera.settings_snapshot()
+        self._camera_settings = deepcopy(DEFAULTS['camera'] if camera_settings is None
+                                         else camera_settings)
         self._on_camera_settings_changed = on_camera_settings_changed
         self._settings_dirty = False
         self._settings_dialog = None
@@ -112,7 +109,7 @@ class SpectrometerUI:
         self._live_buttons = self.buttons
 
     def _name_capture(self):
-        if not self.camera.request_capture(defer_save=True):
+        if not self.camera.request_capture():
             return
         self.mode = 'capture'
         self._capture_record = None
@@ -289,10 +286,8 @@ class SpectrometerUI:
         if self.camera is not None:
             if self._settings_dirty:
                 from .camera import CameraSettings
-                from .config import DEFAULTS
                 values = dict(self._camera_settings,
-                              roi=tuple(self.calibration_settings.get(
-                                  'sensor_area', DEFAULTS['calibration']['sensor_area'])))
+                              roi=tuple(self.calibration_settings['sensor_area']))
                 self.camera.request_reconfigure(CameraSettings(**values))
             else:
                 self.camera.request_resume()
@@ -360,10 +355,9 @@ class SpectrometerUI:
         self._redraw = True
 
     def _accept_setting(self):
-        from .config import DEFAULTS, maximum_frame_rate, validate
+        from .config import maximum_frame_rate, validate
         updated = deepcopy(self._camera_settings)
-        calibration = deepcopy(DEFAULTS['calibration'])
-        calibration.update(deepcopy(self.calibration_settings))
+        calibration = deepcopy(self.calibration_settings)
         calibration_changed = False
         key = self._settings_dialog
         if key == 'resolution':
@@ -508,7 +502,7 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_review(self):
-        if self.mode in ("review", "saved", "sensor", "channel") and self.review.poll_names():
+        if self.mode in ("review", "saved", "channel") and self.review.poll_names():
             self._redraw = True
         if self.mode == "saved":
             loading = self.review.filter_future is not None
@@ -516,8 +510,7 @@ class SpectrometerUI:
             if frame is not None:
                 self._apply_filter(frame)
             elif loading and self.review.filter_future is None:
-                applied = self.review.filter_channel
-                self._channels = set(('Red', 'Green', 'Blue') if applied == 'All' else applied)
+                self._channels = set(self.review.filter_channel)
                 self._redraw = True
             fitting = self.review.blackbody_future is not None
             fit = self.review.poll_blackbody()
@@ -540,7 +533,7 @@ class SpectrometerUI:
             if self._channel_active:
                 from .channel import ChannelCalibration
                 self._channel = ChannelCalibration(
-                    frame, self.calibration_settings.get('channel_ranges', {}))
+                    frame, self.calibration_settings['channel_ranges'])
                 self.mode = 'channel'
                 self.buttons = [
                     ('Accept', pygame.Rect(8, 272, 149, 40), self._accept_channel),
@@ -582,7 +575,6 @@ class SpectrometerUI:
 
     def _open_sensor(self):
         from .camera import CameraSettings
-        from .config import DEFAULTS
         if self.camera is None:
             self._sensor_active = False
             self.mode = 'settings'
@@ -594,7 +586,7 @@ class SpectrometerUI:
         self._sensor = None
         self._sensor_paused = False
         settings = CameraSettings(**self._camera_settings, roi=tuple(
-            self.calibration_settings.get('sensor_area', DEFAULTS['calibration']['sensor_area'])))
+            self.calibration_settings['sensor_area']))
         self.camera.request_sensor_preview(settings)
         self._sensor_buttons()
         self._redraw = True
@@ -619,8 +611,7 @@ class SpectrometerUI:
         self._redraw = True
 
     def _cancel_sensor(self):
-        from .config import DEFAULTS
-        roi = self.calibration_settings.get('sensor_area', DEFAULTS['calibration']['sensor_area'])
+        roi = self.calibration_settings['sensor_area']
         self.camera.request_end_sensor_preview(roi)
         self._exit_review()
 
@@ -629,13 +620,11 @@ class SpectrometerUI:
         self._redraw = True
 
     def _accept_channel(self):
-        from .config import DEFAULTS, validate
+        from .config import validate
         updated = dict(self.calibration_settings,
                        channel_ranges=dict(self._channel.ranges))
-        camera_settings = dict(DEFAULTS['camera'])
-        camera_settings.update(self._camera_settings)
         try:
-            validate({'camera': camera_settings, 'calibration': updated})
+            validate({'camera': self._camera_settings, 'calibration': updated})
             if self._on_calibration_changed is not None:
                 self._on_calibration_changed(updated)
         except (OSError, ValueError):
@@ -651,13 +640,11 @@ class SpectrometerUI:
     def _accept_sensor(self):
         if self._sensor is None:
             return
-        from .config import DEFAULTS, validate
+        from .config import validate
         roi = self._sensor.roi
         updated = dict(self.calibration_settings, sensor_area=roi)
-        camera_settings = dict(DEFAULTS['camera'], resolution=self._sensor.resolution)
-        camera_settings.update(self._camera_settings)
         try:
-            validate({'camera': camera_settings, 'calibration': updated})
+            validate({'camera': self._camera_settings, 'calibration': updated})
             if self._on_calibration_changed is not None:
                 self._on_calibration_changed(updated)
         except ValueError:
@@ -677,12 +664,12 @@ class SpectrometerUI:
 
     def _update_plot(self, frame):
         from .plot import SpectrumPlot
-        maximum = frame.maximum or ((frame.roi[3] - frame.roi[1]) * 255)
+        maximum = frame.maximum or ((frame.roi[3] - frame.roi[1]) * 255 * 3)
         if self._plot.roi != tuple(frame.roi) or self._plot.maximum != maximum:
             self._plot = SpectrumPlot(frame.roi, maximum)
             self._redraw = True
         calibration = frame.calibration if self.mode == 'saved' else self.calibration_settings
-        if self._plot.set_calibration({} if self._scale_active else calibration.get('scale', {})):
+        if self._plot.set_calibration({} if self._scale_active else calibration['scale']):
             self._redraw = True
         self._plot.update(frame.intensity)
 
@@ -807,7 +794,7 @@ class SpectrometerUI:
     def _back_peak(self):
         self._peak_dialog = False
         self._peaks.selected = None
-        self.buttons = getattr(self, "_saved_buttons", [("Back", pygame.Rect(8, 264, 464, 48), self._review_list)])
+        self.buttons = self._saved_buttons
         self._redraw = True
 
     def _ask_filter(self):
@@ -1260,8 +1247,6 @@ class SpectrometerUI:
         header = self.review.message or ("Review captures" if self.review.entries else "No captures found")
         if self._scale_active and not self.review.message and self.review.entries:
             header = "Scale calibration: select a capture"
-        if self._sensor_active and not self.review.message and self.review.entries:
-            header = "Sensor calibration: select a capture"
         if self._channel_active and not self.review.message and self.review.entries:
             header = "Channel calibration: select a capture"
         surface.blit(small.render(header[:65], True, TEXT), (8, 10))
@@ -1367,9 +1352,8 @@ class SpectrometerUI:
             if preview is None:
                 return False
             from .sensor import SensorSelection
-            from .config import DEFAULTS
             roi = (self._sensor.roi if self._sensor is not None else
-                   self.calibration_settings.get('sensor_area', DEFAULTS['calibration']['sensor_area']))
+                   self.calibration_settings['sensor_area'])
             self._sensor = SensorSelection(preview, roi)
             return True
         if self.camera is None or self.mode != "live":

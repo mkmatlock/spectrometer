@@ -45,14 +45,14 @@ class SettingsView:
 
     @staticmethod
     def camera_rows(snapshot):
-        fps, size, exposure, averaging = (snapshot.get(key) for key in
+        fps, size, exposure, averaging = (snapshot[key] for key in
                                           ('frame_rate', 'resolution', 'exposure_us', 'frame_averaging'))
         return [
-            ('Frame rate', f'{fps:g} fps' if fps is not None else 'Unavailable'),
-            ('Camera resolution', f'{size[0]} x {size[1]}' if size else 'Unavailable'),
+            ('Frame rate', f'{fps:g} fps'),
+            ('Camera resolution', f'{size[0]} x {size[1]}'),
             ('Exposure time', f'{exposure / 1000:g} ms' if exposure is not None
-             else ('Auto' if snapshot else 'Unavailable')),
-            ('Frame averaging', str(averaging) if averaging is not None else 'Unavailable'),
+             else 'Auto'),
+            ('Frame averaging', str(averaging)),
         ]
 
     def update_camera(self, snapshot):

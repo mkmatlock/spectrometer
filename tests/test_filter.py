@@ -9,6 +9,7 @@ import numpy as np
 from spectrometer.camera import BAR_SIZE
 from spectrometer.review import load_channels
 from spectrometer.ui import SpectrometerUI
+from tests.spectrum_fixtures import spectrum_record
 
 
 class FilterTests(unittest.TestCase):
@@ -18,7 +19,7 @@ class FilterTests(unittest.TestCase):
         rgb[:, 42, 0] = 255
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'spectrum-test.pkl'
-            path.write_bytes(pickle.dumps({}))
+            path.write_bytes(pickle.dumps(spectrum_record()))
             original = path.read_bytes()
             with patch('spectrometer.review.raw_rgb', return_value=rgb):
                 channels = load_channels(path)
@@ -34,8 +35,9 @@ class FilterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'spectrum-2026-09-13-12-00-00.pkl'
             original_bar = bytes([50]) * (BAR_SIZE[0] * BAR_SIZE[1] * 3)
-            original = pickle.dumps({'spectrum_intensity': np.full(3500, 1000, np.int32),
-                                     'spectrum_bar': original_bar})
+            original = pickle.dumps(spectrum_record(
+                spectrum_intensity=np.full(3500, 1000, np.int32),
+                spectrum_bar=original_bar))
             path.write_bytes(original)
             ui = SpectrometerUI(review_directory=directory)
             try:

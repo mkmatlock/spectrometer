@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 
 import numpy as np
 import pygame
@@ -7,6 +8,7 @@ from spectrometer.camera import SpectrumFrame
 from spectrometer.plot import SpectrumPlot
 from spectrometer.scale import WavelengthScale
 from spectrometer.ui import SpectrometerUI
+from spectrometer.config import DEFAULTS
 
 
 class WavelengthTests(unittest.TestCase):
@@ -43,7 +45,8 @@ class WavelengthTests(unittest.TestCase):
         self.assertIsNone(plot.scale)
 
     def test_review_nm_scale_pixels_and_live_refresh_after_label_changes(self):
-        ui = SpectrometerUI(calibration_settings={'scale': {1000: 700, 2000: 500}})
+        ui = SpectrometerUI(calibration_settings=dict(deepcopy(DEFAULTS['calibration']),
+                                                     scale={1000: 700, 2000: 500}))
         self.addCleanup(ui.review.close)
         self.addCleanup(ui.settings_view.close)
         values = np.zeros(3500, np.int32)

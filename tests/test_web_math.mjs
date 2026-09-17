@@ -14,6 +14,7 @@ function averagedRecord() {
   return {
     spectrum_roi: [10, 20, 14, 22],
     spectrum_intensity: [5, 6, 7, 8], // Persisted calibrated aggregate is authoritative.
+    spectrum_maximum: 2 * 255 * 3,
     spectrum_bar: encoded(new Uint8Array(462 * 38 * 3).fill(11)),
     averaged_camera_output: encoded([
       1, 10, 100, 2, 20, 110, 3, 30, 120, 4, 40, 130,
@@ -48,56 +49,33 @@ test('averaged BGR image channels, aggregate, preview and disabled channels matc
   assert.deepEqual(record, original);
 });
 
-test('legacy all-channel capture retains its saved grayscale intensity and scale', () => {
+test('saved display maximum preserves the measurement scale without interpreting its calculation method', () => {
   const record = averagedRecord();
+  record.spectrum_maximum = 2 * 255;
   delete record.instrument_settings.intensity_calculation;
-  delete record.instrument_settings.calibration_settings;
-  record.calibration_settings = {scale: {'10': 400, '13': 900}};
   const display = buildDisplay(prepareSpectrum(record));
   assert.deepEqual([...display.intensity], record.spectrum_intensity);
-  assert.equal(display.maximum, 2 * 255);
-  assert.deepEqual(display.scalePoints, [[10, 400], [13, 900]]);
+  assert.equal(display.maximum, record.spectrum_maximum);
+  assert.deepEqual(display.scalePoints, [[10, 700], [13, 400]]);
 });
 
-test('all packed Bayer patterns reproduce OpenCV column sums, including borders, stride and ROI', () => {
-  const bayer = [11, 33, 21, 44, 66, 122, 77, 144, 55, 99, 44, 22, 155, 233, 255, 77];
-  // Expected values generated with cv2.cvtColor(..., COLOR_Bayer{pattern}2RGB).
-  const expected = {
-    RGGB: [[166, 336, 600], [166, 336, 600], [154, 380, 554], [154, 380, 554]],
-    BGGR: [[600, 336, 166], [600, 336, 166], [554, 380, 154], [554, 380, 154]],
-    GRBG: [[330, 472, 420], [330, 472, 420], [222, 254, 486], [222, 254, 486]],
-    GBRG: [[420, 472, 330], [420, 472, 330], [486, 254, 222], [486, 254, 222]],
-  };
-  const packed = new Uint8Array(8 * 16).fill(255);
-  for (let y = 0; y < 4; y++) {
-    for (let x = 0; x < 4; x += 2) {
-      const offset = (y + 2) * 16 + (x + 2) * 3 / 2;
-      packed[offset] = bayer[y * 4 + x];
-      packed[offset + 1] = bayer[y * 4 + x + 1];
-      packed[offset + 2] = 7; // Low bits must not affect the 8-bit preview.
-    }
+test('current records require cropped image, saved preview, ROI and nested calibration metadata', () => {
+  for (const [key, message] of [
+    ['averaged_camera_output', /Invalid averaged camera image/],
+    ['spectrum_bar', /Invalid camera slice/],
+    ['spectrum_roi', /Invalid sensor area/],
+    ['spectrum_maximum', /Invalid spectrum maximum/],
+    ['instrument_settings', /Invalid calibration settings/],
+  ]) {
+    const record = averagedRecord();
+    delete record[key];
+    assert.throws(() => prepareSpectrum(record), message, key);
   }
-  for (const [pattern, totals] of Object.entries(expected)) {
-    const record = {
-      spectrum_roi: [2, 2, 6, 6], spectrum_intensity: [1, 2, 3, 4],
-      raw_camera_output: encoded(packed, [8, 16]),
-      instrument_settings: {raw_camera_format: {format: `S${pattern}12_CSI2P`, size: [8, 8], stride: 16}},
-    };
-    const prepared = prepareSpectrum(record);
-    for (const [index, channel] of ['Red', 'Green', 'Blue'].entries()) {
-      assert.deepEqual([...buildDisplay(prepared, [channel]).intensity], totals.map(row => row[index]), pattern);
-    }
-    assert.equal(buildDisplay(prepared).rgb.length, 462 * 38 * 3);
-  }
-});
-
-test('missing channel source permits saved view and reports channel filter error', () => {
   const record = averagedRecord();
-  delete record.averaged_camera_output;
-  const prepared = prepareSpectrum(record);
-  assert.deepEqual([...buildDisplay(prepared).intensity], record.spectrum_intensity);
-  assert.throws(() => buildDisplay(prepared, ['Red']), /no camera image/);
-  assert.throws(() => buildDisplay(prepared, ['Orange']), /Unknown color/);
+  record.calibration_settings = record.instrument_settings.calibration_settings;
+  delete record.instrument_settings.calibration_settings;
+  assert.throws(() => prepareSpectrum(record), /Invalid calibration settings/);
+  assert.throws(() => buildDisplay(prepareSpectrum(averagedRecord()), ['Orange']), /Unknown color/);
 });
 
 test('invalid image buffers and nonfinite spectrum data are rejected', () => {
@@ -105,6 +83,11 @@ test('invalid image buffers and nonfinite spectrum data are rejected', () => {
   record.averaged_camera_output.shape = [4, 2, 3];
   assert.throws(() => prepareSpectrum(record), /Invalid averaged/);
   record.averaged_camera_output.shape = [2, 4, 3];
+  for (const maximum of [0, -1, NaN, Infinity, '1530']) {
+    record.spectrum_maximum = maximum;
+    assert.throws(() => prepareSpectrum(record), /Invalid spectrum maximum/);
+  }
+  record.spectrum_maximum = 1530;
   record.spectrum_intensity[0] = NaN;
   assert.throws(() => prepareSpectrum(record), /Invalid spectrum intensity/);
 });

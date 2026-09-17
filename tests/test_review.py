@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import pickle
+from copy import deepcopy
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -10,14 +11,16 @@ import pygame
 
 from spectrometer.camera import BAR_SIZE
 from spectrometer.capture import save_capture
-from spectrometer.review import ReviewList, load_spectrum, raw_bar
+from spectrometer.review import ReviewList, load_spectrum, raw_rgb
 from spectrometer.ui import SpectrometerUI
+from tests.spectrum_fixtures import spectrum_record
 
 
 def record(second=0):
-    return {'timestamp': datetime(2026, 9, 12, 12, 0, second, tzinfo=timezone.utc),
-            'spectrum_intensity': np.arange(3500, dtype=np.int32),
-            'spectrum_bar': bytes((255, 0, 0)) * (BAR_SIZE[0] * BAR_SIZE[1])}
+    return spectrum_record(
+        timestamp=datetime(2026, 9, 12, 12, 0, second, tzinfo=timezone.utc),
+        spectrum_intensity=np.arange(3500, dtype=np.int32),
+        spectrum_bar=bytes((255, 0, 0)) * (BAR_SIZE[0] * BAR_SIZE[1]))
 
 
 class ReviewTests(unittest.TestCase):
@@ -155,16 +158,13 @@ class ReviewTests(unittest.TestCase):
             finally:
                 review.close()
 
-    def test_legacy_bayer_bar_with_stride_padding(self):
-        # Neutral white produces white regardless of Bayer order; row padding
-        # must never be interpreted as sensor pixels.
-        raw = np.zeros((3040, 6112), dtype=np.uint8)
-        raw[:, :6084] = 255
-        config = {'size': (4056, 3040), 'stride': 6112, 'format': 'SBGGR12_CSI2P'}
-        for settings in ({'raw_camera_format': config},
-                         {'instrument_settings': {'raw_camera_format': config}}):
-            result = raw_bar(dict(settings, raw_camera_output=raw))
-            self.assertEqual(result, bytes([255]) * (462 * 38 * 3))
+    def test_averaged_bgr_roi_decodes_without_changing_saved_image(self):
+        data = record()
+        data['averaged_camera_output'][:] = (10, 20, 30)
+        result = raw_rgb(data)
+        self.assertEqual(result.shape, (250, 3500, 3))
+        np.testing.assert_array_equal(result[0, 0], [30, 20, 10])
+        np.testing.assert_array_equal(data['averaged_camera_output'][0, 0], [10, 20, 30])
 
     def test_invalid_spectrum_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -173,3 +173,65 @@ class ReviewTests(unittest.TestCase):
             path = save_capture(data, directory)
             with self.assertRaises(ValueError):
                 load_spectrum(path)
+
+    def test_plot_requires_saved_roi_bar_maximum_and_nested_calibration(self):
+        data = spectrum_record(spectrum_roi=(0, 0, 462, 2))
+        fields = [('spectrum_roi',), ('spectrum_bar',), ('spectrum_maximum',),
+                  ('instrument_settings', 'calibration_settings')]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'spectrum-test.pkl'
+            for field in fields:
+                with self.subTest(field=field):
+                    invalid = deepcopy(data)
+                    target = invalid
+                    for part in field[:-1]:
+                        target = target[part]
+                    del target[field[-1]]
+                    path.write_bytes(pickle.dumps(invalid))
+                    with self.assertRaises(KeyError):
+                        load_spectrum(path)
+
+    def test_channel_processing_requires_averaged_roi_metadata(self):
+        data = spectrum_record(spectrum_roi=(0, 0, 462, 2))
+        fields = [('averaged_camera_output',),
+                  ('instrument_settings', 'averaged_camera_format'),
+                  ('instrument_settings', 'averaged_camera_format', 'size'),
+                  ('instrument_settings', 'averaged_camera_format', 'origin'),
+                  ('instrument_settings', 'averaged_camera_format', 'format')]
+        for field in fields:
+            with self.subTest(field=field):
+                invalid = deepcopy(data)
+                target = invalid
+                for part in field[:-1]:
+                    target = target[part]
+                del target[field[-1]]
+                with self.assertRaises(KeyError):
+                    raw_rgb(invalid)
+
+    def test_saved_maximum_controls_plot_independently_of_calculation_metadata(self):
+        values = np.zeros(462, np.int32)
+        values[100] = 500
+        data = spectrum_record(spectrum_roi=(0, 0, 462, 2),
+                               spectrum_intensity=values, spectrum_maximum=500)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'spectrum-test.pkl'
+            ui = SpectrometerUI(review_directory=directory)
+            try:
+                ui.mode = 'saved'
+                for calculation in ('rgb_channel_sum', 'unrecognized', None):
+                    with self.subTest(calculation=calculation):
+                        if calculation is None:
+                            data['instrument_settings'].pop('intensity_calculation')
+                        else:
+                            data['instrument_settings']['intensity_calculation'] = calculation
+                        path.write_bytes(pickle.dumps(data))
+                        frame = load_spectrum(path)
+                        ui._update_plot(frame)
+                        self.assertEqual(frame.maximum, 500)
+                        self.assertEqual(ui._plot.maximum, 500)
+                        self.assertEqual(min(point[1] for point in ui._plot.points),
+                                         ui._plot.AREA.top)
+                        np.testing.assert_array_equal(frame.intensity, values)
+            finally:
+                ui.review.close()
+                ui.settings_view.close()

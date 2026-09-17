@@ -2,7 +2,6 @@
 const CHANNELS = ['Red', 'Green', 'Blue'];
 const BAR_WIDTH = 462;
 const BAR_HEIGHT = 38;
-const DEFAULT_ROI = [0, 1550, 3500, 1800];
 
 function bytes(value, label) {
   if (!value || value.encoding !== 'base64' || typeof value.data !== 'string') {
@@ -84,80 +83,22 @@ export function axisTicks(points, start, end) {
 }
 
 function imageReader(record, roi) {
-  const settings = record.instrument_settings || {};
+  const config = record.instrument_settings.averaged_camera_format;
   const width = roi[2] - roi[0], height = roi[3] - roi[1];
-  if (record.averaged_camera_output) {
-    const config = settings.averaged_camera_format || {};
-    const image = record.averaged_camera_output;
-    const data = bytes(image, 'averaged camera image');
-    if (image.dtype !== 'uint8' || config.format !== 'BGR888' ||
-        String(image.shape) !== String([height, width, 3]) ||
-        String(config.size) !== String([width, height]) ||
-        String(config.origin) !== String(roi.slice(0, 2)) || data.length !== width * height * 3) {
-      throw new Error('Invalid averaged camera image');
-    }
-    return (y, row) => {
-      const offset = y * width * 3;
-      for (let x = 0; x < width * 3; x += 3) {
-        row[x] = data[offset + x + 2];
-        row[x + 1] = data[offset + x + 1];
-        row[x + 2] = data[offset + x];
-      }
-    };
-  }
-  if (!record.raw_camera_output) return null;
-  const config = settings.raw_camera_format || record.raw_camera_format || {};
-  const match = /^S(RGGB|BGGR|GRBG|GBRG)12_CSI2P$/.exec(config.format || '');
-  const size = config.size || [];
-  const image = record.raw_camera_output;
-  const data = bytes(image, 'raw camera image');
-  const stride = config.stride ?? size[0] * 3 / 2;
-  if (!match || image.dtype !== 'uint8' || size.length !== 2 ||
-      !size.every(v => Number.isInteger(v) && v > 0) ||
-      !Number.isInteger(stride) || stride < size[0] * 3 / 2 ||
-      data.length !== size[1] * stride || roi[2] > size[0] || roi[3] > size[1] ||
-      roi.some(v => v % 2 !== 0) || width < 4 || height < 4) {
-    throw new Error('Unsupported or invalid packed camera image');
-  }
-  const pattern = match[1];
-  // Only three Bayer rows are retained. Packed CSI2 byte three holds the low
-  // four bits, which the device also discards for its 8-bit display processing.
-  const rows = new Map();
-  function bayerRow(y) {
-    if (!rows.has(y)) {
-      const row = new Uint8Array(width);
-      const offset = (roi[1] + y) * stride + roi[0] * 3 / 2;
-      for (let x = 0, packed = offset; x < width; x += 2, packed += 3) {
-        row[x] = data[packed];
-        row[x + 1] = data[packed + 1];
-      }
-      rows.set(y, row);
-    }
-    return rows.get(y);
+  const image = record.averaged_camera_output;
+  const data = bytes(image, 'averaged camera image');
+  if (!config || image.dtype !== 'uint8' || config.format !== 'BGR888' ||
+      String(image.shape) !== String([height, width, 3]) ||
+      String(config.size) !== String([width, height]) ||
+      String(config.origin) !== String(roi.slice(0, 2)) || data.length !== width * height * 3) {
+    throw new Error('Invalid averaged camera image');
   }
   return (y, row) => {
-    // OpenCV's bilinear Bayer conversion replicates the nearest interior
-    // output pixel at the outside one-pixel border.
-    const cy = Math.max(1, Math.min(height - 2, y));
-    for (const key of rows.keys()) if (key < cy - 1) rows.delete(key);
-    const top = bayerRow(cy - 1), middle = bayerRow(cy), bottom = bayerRow(cy + 1);
-    for (let x = 0; x < width; x++) {
-      const cx = Math.max(1, Math.min(width - 2, x));
-      const color = pattern[(cy % 2) * 2 + cx % 2];
-      const offset = x * 3;
-      if (color === 'G') {
-        row[offset + 1] = middle[cx];
-        const horizontal = (middle[cx - 1] + middle[cx + 1] + 1) >> 1;
-        const vertical = (top[cx] + bottom[cx] + 1) >> 1;
-        const horizontalRed = pattern[(cy % 2) * 2 + (1 - cx % 2)] === 'R';
-        row[offset] = horizontalRed ? horizontal : vertical;
-        row[offset + 2] = horizontalRed ? vertical : horizontal;
-      } else {
-        const other = (top[cx - 1] + top[cx + 1] + bottom[cx - 1] + bottom[cx + 1] + 2) >> 2;
-        row[offset] = color === 'R' ? middle[cx] : other;
-        row[offset + 2] = color === 'B' ? middle[cx] : other;
-        row[offset + 1] = (top[cx] + bottom[cx] + middle[cx - 1] + middle[cx + 1] + 2) >> 2;
-      }
+    const offset = y * width * 3;
+    for (let x = 0; x < width * 3; x += 3) {
+      row[x] = data[offset + x + 2];
+      row[x + 1] = data[offset + x + 1];
+      row[x + 2] = data[offset + x];
     }
   };
 }
@@ -177,50 +118,55 @@ function resizeWeights(size, target) {
 }
 
 export function prepareSpectrum(record) {
-  const roi = [...(record.spectrum_roi || DEFAULT_ROI)];
-  if (roi.length !== 4 || !roi.every(v => Number.isInteger(v) && v >= 0) ||
-      roi[2] <= roi[0] || roi[3] <= roi[1]) throw new Error('Invalid sensor area');
+  if (!Array.isArray(record.spectrum_roi) || record.spectrum_roi.length !== 4 ||
+      !record.spectrum_roi.every(v => Number.isInteger(v) && v >= 0)) {
+    throw new Error('Invalid sensor area');
+  }
+  const roi = [...record.spectrum_roi];
+  if (roi[2] <= roi[0] || roi[3] <= roi[1]) throw new Error('Invalid sensor area');
   const width = roi[2] - roi[0], height = roi[3] - roi[1];
   const savedIntensity = Float64Array.from(record.spectrum_intensity || []);
   if (savedIntensity.length !== width || !savedIntensity.every(Number.isFinite)) {
     throw new Error('Invalid spectrum intensity data');
   }
-  const settings = record.instrument_settings || {};
-  const calibration = settings.calibration_settings || record.calibration_settings || {};
+  const settings = record.instrument_settings;
+  const calibration = settings?.calibration_settings;
+  if (![settings, calibration, calibration?.scale, calibration?.channel_ranges].every(value =>
+    value && typeof value === 'object' && !Array.isArray(value))) {
+    throw new Error('Invalid calibration settings');
+  }
+  if (!Number.isFinite(record.spectrum_maximum) || record.spectrum_maximum <= 0) {
+    throw new Error('Invalid spectrum maximum');
+  }
   const scalePoints = normalizeScalePoints(calibration.scale);
-  let savedRgb = record.spectrum_bar ? bytes(record.spectrum_bar, 'camera slice') : null;
-  if (savedRgb && savedRgb.length !== BAR_WIDTH * BAR_HEIGHT * 3) throw new Error('Invalid camera slice');
+  const savedRgb = bytes(record.spectrum_bar, 'camera slice');
+  if (savedRgb.length !== BAR_WIDTH * BAR_HEIGHT * 3) throw new Error('Invalid camera slice');
   const reader = imageReader(record, roi);
-  let channelSums = null, rawRgb = null;
-  if (reader) {
-    channelSums = CHANNELS.map(() => new Float64Array(width));
-    const accumulated = new Float64Array(BAR_WIDTH * BAR_HEIGHT * 3);
-    const row = new Uint8Array(width * 3);
-    const resizedRow = new Float64Array(BAR_WIDTH * 3);
-    const xWeights = resizeWeights(width, BAR_WIDTH);
-    const yWeights = resizeWeights(height, BAR_HEIGHT);
-    for (let y = 0; y < height; y++) {
-      reader(y, row);
-      resizedRow.fill(0);
-      for (let x = 0; x < width; x++) {
-        const offset = x * 3;
-        for (let c = 0; c < 3; c++) channelSums[c][x] += row[offset + c];
-        for (const [target, weight] of xWeights[x]) {
-          for (let c = 0; c < 3; c++) resizedRow[target * 3 + c] += row[offset + c] * weight;
-        }
-      }
-      for (const [target, weight] of yWeights[y]) {
-        const offset = target * BAR_WIDTH * 3;
-        for (let i = 0; i < resizedRow.length; i++) accumulated[offset + i] += resizedRow[i] * weight;
+  const channelSums = CHANNELS.map(() => new Float64Array(width));
+  const accumulated = new Float64Array(BAR_WIDTH * BAR_HEIGHT * 3);
+  const row = new Uint8Array(width * 3);
+  const resizedRow = new Float64Array(BAR_WIDTH * 3);
+  const xWeights = resizeWeights(width, BAR_WIDTH);
+  const yWeights = resizeWeights(height, BAR_HEIGHT);
+  for (let y = 0; y < height; y++) {
+    reader(y, row);
+    resizedRow.fill(0);
+    for (let x = 0; x < width; x++) {
+      const offset = x * 3;
+      for (let c = 0; c < 3; c++) channelSums[c][x] += row[offset + c];
+      for (const [target, weight] of xWeights[x]) {
+        for (let c = 0; c < 3; c++) resizedRow[target * 3 + c] += row[offset + c] * weight;
       }
     }
-    rawRgb = Uint8ClampedArray.from(accumulated, Math.round);
+    for (const [target, weight] of yWeights[y]) {
+      const offset = target * BAR_WIDTH * 3;
+      for (let i = 0; i < resizedRow.length; i++) accumulated[offset + i] += resizedRow[i] * weight;
+    }
   }
-  if (!savedRgb && !rawRgb) throw new Error('No camera image is available');
-  savedRgb = new Uint8ClampedArray(savedRgb || rawRgb);
+  const rawRgb = Uint8ClampedArray.from(accumulated, Math.round);
   return {
-    roi, scalePoints, savedIntensity, savedRgb, channelSums, rawRgb,
-    maximum: height * 255 * (settings.intensity_calculation === 'rgb_channel_sum' ? 3 : 1),
+    roi, scalePoints, savedIntensity, savedRgb: new Uint8ClampedArray(savedRgb), channelSums, rawRgb,
+    maximum: record.spectrum_maximum,
   };
 }
 
@@ -231,15 +177,13 @@ export function buildDisplay(prepared, enabledChannels = CHANNELS) {
     width: BAR_WIDTH, height: BAR_HEIGHT, roi: prepared.roi,
     maximum: prepared.maximum, scalePoints: prepared.scalePoints,
   };
-  // All-channel view retains the actual saved calculation, including legacy
-  // grayscale processing and recorded channel calibration. This matches Review.
+  // The saved aggregate includes channel calibration and is authoritative.
   if (channels.length === 3) {
     return {...common, intensity: prepared.savedIntensity, rgb: prepared.savedRgb};
   }
   const intensity = new Float64Array(prepared.savedIntensity.length);
   const rgb = new Uint8ClampedArray(BAR_WIDTH * BAR_HEIGHT * 3);
   if (channels.length) {
-    if (!prepared.channelSums) throw new Error('This capture has no camera image for channel filtering');
     for (const channel of channels) {
       const c = CHANNELS.indexOf(channel);
       const sums = prepared.channelSums[c];

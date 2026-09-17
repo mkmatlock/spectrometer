@@ -2,14 +2,21 @@ from pathlib import Path
 import pickle
 import tempfile
 import unittest
+from datetime import datetime, timezone
+
+import numpy as np
 
 from spectrometer.review import ReviewList
+from tests.spectrum_fixtures import spectrum_record
 
 
 class ReviewNameTests(unittest.TestCase):
-    def test_names_load_in_background_with_legacy_and_invalid_fallbacks(self):
+    def test_names_load_in_background_with_unreadable_file_handling(self):
         with tempfile.TemporaryDirectory() as directory:
-            for second, record in enumerate(({'name': 'Lamp spectrum'}, {}, {'name': ' '})):
+            for second, name in enumerate(('Lamp spectrum', 'Absorption spectrum', 'Reference')):
+                record = spectrum_record(name=name,
+                                         timestamp=datetime(2026, 9, 14, 12, 0, second,
+                                                            tzinfo=timezone.utc))
                 path = Path(directory) / f'spectrum-2026-09-14-12-00-{second:02}.pkl'
                 path.write_bytes(pickle.dumps(record))
             broken = Path(directory) / 'spectrum-2026-09-14-12-00-03.pkl'
@@ -24,8 +31,8 @@ class ReviewNameTests(unittest.TestCase):
                     changes += bool(review.poll_names())
                 self.assertEqual(changes, 4)
                 self.assertEqual([review.name(p) for p in review.entries],
-                                 ['Unreadable spectrum', 'Unnamed spectrum',
-                                  'Unnamed spectrum', 'Lamp spectrum'])
+                                 ['Unreadable spectrum', 'Reference',
+                                  'Absorption spectrum', 'Lamp spectrum'])
                 self.assertIsNone(review._names_future)
             finally:
                 review.close()
@@ -39,8 +46,8 @@ class RenameTests(unittest.TestCase):
         from spectrometer.capture import save_capture, rename_capture
         from spectrometer.catalog import SpectrumCatalog
         with tempfile.TemporaryDirectory() as directory:
-            record = {'name': 'Original', 'timestamp': datetime(2026, 9, 16, 12),
-                      'spectrum_intensity': [1, 2, 3], 'instrument_settings': {'exposure_time_us': 100}}
+            record = spectrum_record(name='Original',
+                                     timestamp=datetime(2026, 9, 16, 12, tzinfo=timezone.utc))
             path = save_capture(record, directory)
             original = path.read_bytes()
             ui = SpectrometerUI(review_directory=directory)
@@ -70,7 +77,7 @@ class RenameTests(unittest.TestCase):
                 ui._poll_capture()
                 self.assertEqual(ui.mode, 'review')
                 self.assertEqual(ui.review.name(path), 'New name')
-                self.assertEqual(pickle.loads(path.read_bytes()), dict(record, name='New name'))
+                np.testing.assert_equal(pickle.loads(path.read_bytes()), dict(record, name='New name'))
                 catalog = SpectrumCatalog(directory)
                 try:
                     self.assertEqual(catalog.list_api()[0]['name'], 'New name')

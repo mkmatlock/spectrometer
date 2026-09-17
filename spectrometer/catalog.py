@@ -21,30 +21,21 @@ METRICS = PerformanceMetrics('catalog')
 
 def timestamp_id(timestamp):
     """Return an exact integer millisecond ID without floating-point rounding."""
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.astimezone()
+    if not isinstance(timestamp, datetime) or timestamp.utcoffset() is None:
+        raise ValueError('Spectrum timestamp must include a timezone')
     elapsed = timestamp.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
     return (elapsed.days * 86400 + elapsed.seconds) * 1000 + elapsed.microseconds // 1000
 
 
 def display_name(record):
-    name = record.get('name', '')
-    return name.strip() if isinstance(name, str) and name.strip() else 'Unnamed spectrum'
-
-
-def record_timestamp(path, record):
-    """Use the saved timestamp, falling back to the legacy filename format."""
-    timestamp = record.get('timestamp')
-    if isinstance(timestamp, datetime):
-        return timestamp
-    try:
-        return datetime.strptime(path.stem, 'spectrum-%Y-%m-%d-%H-%M-%S').astimezone()
-    except ValueError as exc:
-        raise ValueError('Spectrum has no valid timestamp') from exc
+    name = record['name']
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError('Spectrum must have a name')
+    return name.strip()
 
 
 def metadata(path, record, stat=None):
-    timestamp = record_timestamp(path, record)
+    timestamp = record['timestamp']
     stat = stat or path.stat()
     return {
         'filename': path.name,

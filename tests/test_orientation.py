@@ -13,7 +13,7 @@ class OrientationTests(unittest.TestCase):
         rgb[:, :231, 0] = 255
         rgb[:, 231:, 2] = 255
         intensity = np.zeros(3500, np.int32)
-        intensity[100] = 63750
+        intensity[100] = 191250
         original = intensity.copy()
         frame = SpectrumFrame(rgb.tobytes(), intensity)
         camera = Mock()

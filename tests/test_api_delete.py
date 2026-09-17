@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from spectrometer.server import running_server
+from tests.spectrum_fixtures import spectrum_record
 
 
 class DeleteTests(unittest.TestCase):
@@ -14,7 +15,7 @@ class DeleteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             paths = [Path(directory) / f'spectrum-{i}.pkl' for i in (1, 2)]
             for i, path in enumerate(paths, 1):
-                path.write_bytes(pickle.dumps({'timestamp': datetime(1970, 1, 1, 0, 0, i, tzinfo=timezone.utc)}))
+                path.write_bytes(pickle.dumps(spectrum_record(timestamp=datetime(1970, 1, 1, 0, 0, i, tzinfo=timezone.utc))))
             with running_server('127.0.0.1', 0, capture_directory=directory) as server:
                 def request(method, route):
                     connection = HTTPConnection(*server.server_address, timeout=5)

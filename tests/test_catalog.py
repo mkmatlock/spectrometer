@@ -9,12 +9,12 @@ from unittest.mock import patch
 from spectrometer.capture import save_capture
 from spectrometer.catalog import DuplicateSpectrumID, SpectrumCatalog
 from spectrometer.review import ReviewList
+from tests.spectrum_fixtures import spectrum_record
 
 
 def record(second=0, name='Lamp'):
-    return {'timestamp': datetime(2026, 9, 14, 12, 0, second, tzinfo=timezone.utc),
-            'name': name, 'raw_camera_output': bytes(128),
-            'spectrum_intensity': [1, 2, 3]}
+    return spectrum_record(timestamp=datetime(2026, 9, 14, 12, 0, second, tzinfo=timezone.utc),
+                           name=name)
 
 
 class CatalogTests(unittest.TestCase):
@@ -35,11 +35,11 @@ class CatalogTests(unittest.TestCase):
             path = save_capture(record(), directory)
             self.assertTrue(path.exists())
 
-    def test_legacy_backfill_then_unchanged_and_corrupt_files_are_cached(self):
+    def test_index_backfill_then_unchanged_and_corrupt_files_are_cached(self):
         with tempfile.TemporaryDirectory() as directory:
             valid = Path(directory) / 'spectrum-2026-09-14-12-00-00.pkl'
             broken = Path(directory) / 'spectrum-2026-09-14-12-00-01.pkl'
-            valid.write_bytes(pickle.dumps({'name': 'Legacy'}))
+            valid.write_bytes(pickle.dumps(record(name='Imported')))
             broken.write_bytes(b'broken')
             catalog = SpectrumCatalog(directory)
             original_load = pickle.load
@@ -50,8 +50,24 @@ class CatalogTests(unittest.TestCase):
                 catalog.reconcile_all(force=True)
                 self.assertEqual(load.call_count, 2)
             rows = catalog.row_map()
-            self.assertEqual(rows[valid.name]['name'], 'Legacy')
+            self.assertEqual(rows[valid.name]['name'], 'Imported')
             self.assertFalse(rows[broken.name]['readable'])
+
+    def test_missing_metadata_is_not_reconstructed_from_filename(self):
+        for field in ('timestamp', 'name'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                value = record()
+                del value[field]
+                path = Path(directory) / 'spectrum-2026-09-14-12-00-00.pkl'
+                path.write_bytes(pickle.dumps(value))
+                catalog = SpectrumCatalog(directory)
+                try:
+                    with self.assertLogs('spectrometer.catalog', level='ERROR'):
+                        catalog.reconcile_all(force=True)
+                    self.assertEqual(catalog.list_api(), [])
+                    self.assertFalse(catalog.row_map()[path.name]['readable'])
+                finally:
+                    catalog.close()
 
     def test_changed_and_deleted_files_reconcile(self):
         with tempfile.TemporaryDirectory() as directory:

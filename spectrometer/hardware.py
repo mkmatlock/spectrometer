@@ -138,12 +138,7 @@ class LCDBackend:
             raise RuntimeError('LCD presentation failed') from self._present_error
         pixels = sum(rect.width * rect.height for rect in
                      ([surface.get_rect()] if regions is None else regions))
-        if hasattr(self, '_present_queue'):
-            self._queue_present(surface, regions)
-        else:
-            # Tests and simple direct use without entering the hardware context.
-            for patch in self._prepare(surface, regions):
-                self.display.write_prepared(*patch)
+        self._queue_present(surface, regions)
         elapsed_ms = (time.monotonic() - started) * 1000
         METRICS.add('transfer_ms', elapsed_ms)
         METRICS.add('pixels', pixels)

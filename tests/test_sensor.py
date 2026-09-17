@@ -29,6 +29,7 @@ class SensorTests(unittest.TestCase):
             camera_settings=deepcopy(self.store.data['camera']),
             calibration_settings=deepcopy(self.store.data['calibration']),
             on_calibration_changed=lambda data: self.store.update(calibration=data))
+        self.camera.set_calibration.reset_mock()
         self.addCleanup(self.ui.review.close)
         self.addCleanup(self.ui.settings_view.close)
 
@@ -40,15 +41,18 @@ class SensorTests(unittest.TestCase):
         self.ui._calibration_selected = 1
         self.ui._select_calibration()
         self.assertEqual(self.ui.mode, 'sensor')
+        self.assertEqual([b[0] for b in self.ui.buttons], ['Accept', 'Reset', 'Pause', 'Cancel'])
+        self.ui.buttons[1][2]()
+        self.assertIsNone(self.ui._sensor)
+        self.assertFalse(self.ui._sensor_paused)
         self.assertTrue(self.ui._poll_camera())
-        self.assertEqual([b[0] for b in self.ui.buttons], ['Accept', 'Pause', 'Cancel'])
         rect = self.ui._sensor.rect
         self.ui._pointer_event('lcd', rect.center, True)
         self.ui._pointer_motion('lcd', rect.topleft)
         self.ui._pointer_event('lcd', rect.topleft, False)
         self.assertEqual(self.ui._sensor.roi, (0, 100, 600, 200))
         self.ui._toggle_sensor_pause()
-        self.assertEqual(self.ui.buttons[1][0], 'Resume')
+        self.assertEqual(self.ui.buttons[2][0], 'Resume')
         self.assertFalse(self.ui._poll_camera())
         self.assertEqual(self.ui._sensor.roi, (0, 100, 600, 200))
 
@@ -68,24 +72,44 @@ class SensorTests(unittest.TestCase):
         self.assertLessEqual(size[1], 256)
         self.open_sensor()
         self.drag()
-        self.ui.buttons[1][2]()
+        self.ui.buttons[2][2]()
         self.assertFalse(self.ui._sensor_paused)
         self.assertEqual(self.ui._sensor.roi, (0, 60, 640, 240))
+        self.ui.buttons[1][2]()
+        self.assertTrue(self.ui._sensor_paused)
+        self.assertEqual(self.ui.buttons[2][0], 'Resume')
+        self.assertEqual(self.ui._sensor.roi, (0, 0, 640, 480))
+        self.assertFalse(self.ui._poll_camera())
+        self.assertEqual(self.ui.calibration_settings['sensor_area'], (0, 100, 600, 200))
+        self.camera.set_calibration.assert_not_called()
+        self.camera.request_end_sensor_preview.assert_not_called()
         pygame.font.init()
         self.addCleanup(pygame.font.quit)
         self.ui.draw(pygame.Surface((480, 320)), pygame.font.Font(None, 22))
-        self.ui.buttons[2][2]()
+        self.ui.buttons[3][2]()
         self.assertEqual(self.ui.mode, 'settings')
+        self.camera.request_end_sensor_preview.assert_called_once_with((0, 100, 600, 200))
         self.assertEqual(SettingsStore(self.store.path).data['calibration']['sensor_area'], (0, 100, 600, 200))
         self.assertEqual(self.path.read_bytes(), self.original)
 
-    def test_accept_persists_and_updates_camera(self):
+    def test_accept_persists_full_current_resolution_after_reset(self):
         self.open_sensor()
         self.drag()
+        self.ui._sensor.start = (10, 20)
+        self.ui._sensor.message = 'ROI must fit image'
+        pause_count = self.camera.request_pause.call_count
+        self.ui.buttons[1][2]()
+        self.assertTrue(self.ui._sensor_paused)
+        self.assertEqual(self.camera.request_pause.call_count, pause_count)
+        self.assertEqual(self.ui._sensor.roi, (0, 0, 640, 480))
+        self.assertIsNone(self.ui._sensor.start)
+        self.assertEqual(self.ui._sensor.message, '')
+        self.assertEqual(SettingsStore(self.store.path).data['calibration']['sensor_area'], (0, 100, 600, 200))
         self.ui.buttons[0][2]()
         self.assertEqual(self.ui.mode, 'settings')
-        self.camera.request_end_sensor_preview.assert_called_once_with((0, 60, 640, 240))
-        self.assertEqual(SettingsStore(self.store.path).data['calibration']['sensor_area'], (0, 60, 640, 240))
+        self.camera.request_end_sensor_preview.assert_called_once_with((0, 0, 640, 480))
+        self.camera.set_calibration.assert_called_once_with(self.ui.calibration_settings)
+        self.assertEqual(SettingsStore(self.store.path).data['calibration']['sensor_area'], (0, 0, 640, 480))
         self.assertEqual(self.path.read_bytes(), self.original)
 
     def test_invalid_roi_and_failed_save_stay_in_editor(self):

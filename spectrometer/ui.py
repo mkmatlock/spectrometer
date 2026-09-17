@@ -638,10 +638,21 @@ class SpectrometerUI:
         self._redraw = True
 
     def _sensor_buttons(self):
-        self.buttons = [('Accept', pygame.Rect(8, 264, 149, 48), self._accept_sensor),
+        self.buttons = [('Accept', pygame.Rect(8, 264, 110, 48), self._accept_sensor),
+                        ('Reset', pygame.Rect(126, 264, 110, 48), self._reset_sensor),
                         ('Resume' if self._sensor_paused else 'Pause',
-                         pygame.Rect(165, 264, 150, 48), self._toggle_sensor_pause),
-                        ('Cancel', pygame.Rect(323, 264, 149, 48), self._cancel_sensor)]
+                         pygame.Rect(244, 264, 110, 48), self._toggle_sensor_pause),
+                        ('Cancel', pygame.Rect(362, 264, 110, 48), self._cancel_sensor)]
+
+    def _reset_sensor(self):
+        if self._sensor is None:
+            return
+        if not self._sensor_paused:
+            self._toggle_sensor_pause()
+        self._sensor.roi = self._sensor.bounds
+        self._sensor.start = None
+        self._sensor.message = ''
+        self._redraw = True
 
     def _toggle_sensor_pause(self):
         if self._sensor is None:

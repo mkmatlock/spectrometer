@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111820">
+  <title>Spectrometer</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="header">
+    <a class="brand" href="/" aria-label="Spectrometer home"><span class="brand-mark" aria-hidden="true">▥</span> Spectrometer</a>
+    <nav aria-label="Activities">
+      <button id="review-nav" aria-current="page" data-action>Review</button>
+      <button id="capture-nav" class="primary" data-action>Capture</button>
+      <button id="settings-nav" data-action>Settings</button>
+    </nav>
+  </header>
+  <main>
+    <div id="status" role="status" aria-live="polite"></div>
+    <section id="review-view" aria-label="Review spectra">
+      <div class="workspace">
+        <aside class="library panel">
+          <div class="section-head"><div><p class="eyebrow">LOCAL STORAGE</p><h1>Recorded spectra</h1></div><button id="refresh" class="quiet" data-action>Refresh</button></div>
+          <p id="list-summary" class="secondary">Loading spectra…</p>
+          <div id="spectrum-list" class="spectrum-list" role="group" aria-label="Saved spectra"></div>
+          <div class="library-actions"><button id="display" class="primary" data-action disabled>Display</button><button id="rename" data-action disabled>Rename</button><button id="back" data-action disabled>Back</button></div>
+        </aside>
+        <section class="viewer panel" aria-label="Spectrum display">
+          <div id="empty-view" class="empty"><span class="empty-mark" aria-hidden="true">∿</span><h2>Select a spectrum</h2><p>Choose a recording and press Display.</p></div>
+          <div id="spectrum-view" hidden>
+            <div class="section-head"><div class="title-wrap"><p id="record-date" class="eyebrow"></p><h2 id="record-name"></h2></div><span id="mode-label" class="badge">Emission</span></div>
+            <div class="plot-meta"><span>Total intensity</span><output id="peak-label" aria-live="polite"></output><output id="temperature"></output></div>
+            <canvas id="plot" height="360" tabindex="0" role="img" aria-label="Spectrum intensity graph. Click or touch to select a peak. Use left and right arrows to select a nearby peak."></canvas>
+            <div class="slice-wrap"><canvas id="slice" height="38" aria-label="Raw camera spectrum slice"></canvas></div>
+            <div class="plot-caption"><span id="axis-label">Pixel</span><span id="channel-label">Red · Green · Blue</span></div>
+            <p class="hint">Touch the curve to mark the nearest <span id="feature-kind">peak</span>.</p>
+            <div id="spectrum-modes" class="spectrum-modes" role="group" aria-label="Spectrum display modes">
+              <div class="mode-options">
+                <button class="mode-toggle red" data-channel="Red" aria-pressed="true" data-action><span>Red</span><span class="toggle-light" aria-hidden="true"></span></button>
+                <button class="mode-toggle green" data-channel="Green" aria-pressed="true" data-action><span>Green</span><span class="toggle-light" aria-hidden="true"></span></button>
+                <button class="mode-toggle blue" data-channel="Blue" aria-pressed="true" data-action><span>Blue</span><span class="toggle-light" aria-hidden="true"></span></button>
+                <button id="emission-toggle" class="mode-toggle" aria-pressed="false" data-action><span id="emission-text">Emission</span><span class="toggle-light" aria-hidden="true"></span></button>
+                <button id="blackbody-toggle" class="mode-toggle" aria-pressed="false" data-action><span>Black Body</span><span class="toggle-light" aria-hidden="true"></span></button>
+              </div>
+            </div>
+            <p id="fit-error" class="error" role="status" hidden></p>
+            <div class="viewer-actions"><button id="delete" class="danger quiet" data-action>Delete</button></div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <section id="settings-view" class="panel settings" hidden aria-labelledby="settings-title">
+      <div class="section-head"><div><p class="eyebrow">INSTRUMENT</p><h1 id="settings-title">Settings</h1></div><span class="badge">Read only</span></div>
+      <div id="settings-content"></div>
+      <button id="settings-back" data-action>Back</button>
+    </section>
+  </main>
+  <dialog id="name-dialog" aria-labelledby="name-title">
+    <form id="name-form">
+      <p class="eyebrow">SPECTRUM</p><h2 id="name-title">Name spectrum</h2>
+      <label for="name-input">Name</label><input id="name-input" name="name" type="text" maxlength="64" required autocomplete="off">
+      <p id="name-help" class="secondary"></p>
+      <p id="name-error" class="error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="name-cancel">Cancel</button><button type="submit" class="primary">Accept</button></div>
+    </form>
+  </dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-title">
+    <p class="eyebrow">LOCAL STORAGE</p><h2 id="delete-title">Delete this spectrum?</h2><p id="delete-name"></p><p class="secondary">This removes the recording from the spectrometer.</p>
+    <p id="delete-error" class="error" role="alert"></p>
+    <div class="dialog-actions"><button id="delete-cancel">Cancel</button><button id="delete-confirm" class="danger">Confirm deletion</button></div>
+  </dialog>
+  <noscript>This application needs JavaScript to display spectra.</noscript>
+</body>
+</html>

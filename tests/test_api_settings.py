@@ -2,6 +2,7 @@ from http.client import HTTPConnection
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -47,3 +48,21 @@ class APISettingsTests(unittest.TestCase):
                 self.assertEqual(self.get_settings(server)['camera']['frame_rate'], 3)
                 store.update(camera={'frame_rate': 2})
                 self.assertEqual(self.get_settings(server)['camera']['frame_rate'], 2)
+
+    def test_network_status_is_cached_outside_request_threads(self):
+        queried = threading.Event()
+
+        def read_network():
+            queried.set()
+            return '192.168.1.5', 'Lab Wi-Fi'
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('spectrometer.server.network_status', side_effect=read_network) as query:
+            store = SettingsStore(Path(directory) / '.spectrometer_config')
+            with running_server('127.0.0.1', 0, capture_directory=directory, settings_store=store) as server:
+                self.assertTrue(queried.wait(2))
+                for _ in range(2):
+                    self.assertEqual(self.get_settings(server)['network'],
+                                     {'ip_address': '192.168.1.5', 'wifi_ssid': 'Lab Wi-Fi'})
+                query.assert_called_once_with()
+                self.assertNotIn('network', store.data)

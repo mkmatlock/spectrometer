@@ -1,4 +1,4 @@
-"""Spectrometer REST API with named capture; other endpoints remain stubs."""
+"""Device-hosted spectrum viewer and spectrometer REST API."""
 
 import argparse
 from copy import deepcopy
@@ -17,9 +17,19 @@ import threading
 from urllib.parse import urlsplit, parse_qs
 
 from .catalog import DuplicateSpectrumID, SpectrumCatalog, timestamp_id
+from .capture import rename_capture
+from .settings import network_status
 
 
 LOGGER = logging.getLogger(__name__)
+WEB_DIRECTORY = Path(__file__).with_name('web')
+STATIC_FILES = {
+    '/': ('index.html', 'text/html; charset=utf-8'),
+    '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+    '/style.css': ('style.css', 'text/css; charset=utf-8'),
+    '/spectrum-math.js': ('spectrum-math.js', 'text/javascript; charset=utf-8'),
+}
+RESPONSE_CHUNK_SIZE = 64 * 1024
 
 
 def json_value(value):
@@ -116,6 +126,15 @@ class APIHandler(BaseHTTPRequestHandler):
             self.server.raw_slots.release()
 
     def delete_spectrum(self, spectrum_id):
+        if not self.server.raw_slots.acquire(blocking=False):
+            self._respond({'error': 'Another spectrum operation is in progress'}, 503)
+            return
+        try:
+            self._delete_spectrum(spectrum_id)
+        finally:
+            self.server.raw_slots.release()
+
+    def _delete_spectrum(self, spectrum_id):
         try:
             path = self.server.catalog.find(spectrum_id)
         except DuplicateSpectrumID:
@@ -136,26 +155,110 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
 
+    def rename_spectrum(self, spectrum_id):
+        if self.headers.get_content_type() != 'application/json':
+            self._respond({'error': 'Expected application/json'}, 415)
+            return
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 4096 or self.headers.get('Transfer-Encoding'):
+                raise ValueError('Invalid body length')
+            payload = json.loads(self.rfile.read(length))
+            name = payload.get('name') if isinstance(payload, dict) else None
+            if (not isinstance(name, str) or set(payload) != {'name'} or
+                    not 1 <= len(name.strip()) <= 64):
+                raise ValueError('Invalid name')
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            self._respond({'error': 'Provide a JSON object with one name of 1–64 characters'}, 400)
+            return
+        if not self.server.raw_slots.acquire(blocking=False):
+            self._respond({'error': 'Another spectrum operation is in progress'}, 503)
+            return
+        try:
+            try:
+                path = self.server.catalog.find(spectrum_id)
+            except DuplicateSpectrumID:
+                self._respond({'error': 'Spectrum ID is ambiguous'}, 409)
+                return
+            except Exception:
+                LOGGER.exception('Cannot find spectrum %s for rename', spectrum_id)
+                self._respond({'error': 'Cannot read spectrum metadata'}, 500)
+                return
+            if path is None:
+                self._respond({'error': 'Spectrum not found'}, 404)
+                return
+            try:
+                name = rename_capture(path, name)
+                # Usually a metadata-only check: rename_capture already updates
+                # SQLite. Also refresh this instance's in-memory fallback index.
+                self.server.catalog.reconcile_paths([path])
+            except FileNotFoundError:
+                self.server.catalog.remove(path.name)
+                self._respond({'error': 'Spectrum not found'}, 404)
+                return
+            except Exception:
+                LOGGER.exception('Cannot rename spectrum %s', path.name)
+                self._respond({'error': 'Cannot rename spectrum'}, 500)
+                return
+            self._respond({'id': int(spectrum_id), 'name': name})
+        finally:
+            self.server.raw_slots.release()
+
     def settings(self):
         from .config import SettingsStore
         store = self.server.settings_store
         if store is None:
             # Standalone API reads the same persistent configuration as the UI.
             store = SettingsStore()
-        return deepcopy(store.data)
+        result = deepcopy(store.data)
+        result['network'] = dict(self.server.network_settings)
+        return result
 
-
-    def _respond(self, result, status=200):
-        data = json.dumps(result, default=json_value).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
+    def static_file(self, path):
+        filename, content_type = STATIC_FILES[path]
+        try:
+            data = (WEB_DIRECTORY / filename).read_bytes()
+        except OSError:
+            LOGGER.exception('Cannot read web asset %s', filename)
+            self._respond({'error': 'Web application unavailable'}, 500)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
         self.wfile.write(data)
 
+    def _respond(self, result, status=200):
+        # Serialize before committing headers so encoding failures can still
+        # return a normal error response.
+        data = json.dumps(result, default=json_value).encode('utf-8')
+        try:
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            # SocketWriter.write uses sendall: its timeout covers the entire
+            # call, not just time without progress. Legacy full-sensor images
+            # take longer than ten seconds over Wi-Fi. Bound each write so an
+            # active transfer can continue while stalled clients still time out.
+            view = memoryview(data)
+            for offset in range(0, len(view), RESPONSE_CHUNK_SIZE):
+                self.wfile.write(view[offset:offset + RESPONSE_CHUNK_SIZE])
+        except OSError as exc:
+            # Headers (and perhaps part of the body) have already been sent.
+            # Never append a second HTTP response to the incomplete first one.
+            self.close_connection = True
+            LOGGER.warning('Response interrupted for %s: %s',
+                           urlsplit(self.path).path, type(exc).__name__)
+
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path in STATIC_FILES:
+            self.static_file(path)
+            return
         if path == '/capture':
             self.capture()
             return
@@ -179,6 +282,13 @@ class APIHandler(BaseHTTPRequestHandler):
         else:
             self._respond({'error': 'Not found'}, 404)
 
+    def do_PATCH(self):
+        path = urlsplit(self.path).path
+        if match := re.fullmatch(r'/spectrum/([0-9]+)', path):
+            self.rename_spectrum(match.group(1))
+        else:
+            self._respond({'error': 'Not found'}, 404)
+
     def log_message(self, message, *args):
         LOGGER.info('%s - %s', self.client_address[0], message % args)
 
@@ -199,10 +309,18 @@ def running_server(host='0.0.0.0', port=8000, camera=None, capture_directory=Non
         # full-resolution camera begins consuming the single CPU.
         json.dumps(server.catalog.list_api())
         server.raw_slots = threading.BoundedSemaphore(1)
+        server.network_settings = {'ip_address': 'Loading...', 'wifi_ssid': 'Loading...'}
         reconcile_stop = threading.Event()
 
         def reconcile_catalog():
-            while not reconcile_stop.wait(30):
+            while not reconcile_stop.is_set():
+                try:
+                    address, ssid = network_status()
+                    server.network_settings = {'ip_address': address, 'wifi_ssid': ssid}
+                except Exception:
+                    LOGGER.exception('Cannot read network status')
+                if reconcile_stop.wait(30):
+                    return
                 try:
                     server.catalog.reconcile_all()
                 except Exception:

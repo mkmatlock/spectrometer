@@ -2,12 +2,16 @@
 
 import os
 import logging
+from copy import deepcopy
 from pathlib import Path
 import pickle
 import tempfile
+import threading
 
 
 LOGGER = logging.getLogger(__name__)
+# UI calibration and REST rename/delete operations share the same files.
+_MUTATION_LOCK = threading.RLock()
 
 
 def save_capture(record, directory):
@@ -39,13 +43,39 @@ def save_capture(record, directory):
 
 def rename_capture(path, name):
     """Atomically replace only the display name, preserving spectrum identity."""
-    path = Path(path)
     name = name.strip()
     if not name:
         raise ValueError('Enter a name')
+    def update(record):
+        record['name'] = name
+    _update_capture(path, update)
+    return name
+
+
+def update_scale_calibration(path, labels):
+    """Replace only this capture's wavelength labels, retaining its other calibration."""
+    labels = deepcopy(labels)
+    def update(record):
+        record['instrument_settings']['calibration_settings']['scale'] = labels
+    _update_capture(path, update)
+    return labels
+
+
+def delete_capture(path):
+    """Serialize deletion with metadata edits so a pending edit cannot restore a file."""
+    with _MUTATION_LOCK:
+        Path(path).unlink()
+
+
+def _update_capture(path, update):
+    with _MUTATION_LOCK:
+        _replace_capture(Path(path), update)
+
+
+def _replace_capture(path, update):
     with path.open('rb') as source:
         record = pickle.load(source)
-    record['name'] = name
+    update(record)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.spectrum-', delete=False) as output:
@@ -63,8 +93,7 @@ def rename_capture(path, name):
             finally:
                 catalog.close()
         except Exception:
-            LOGGER.exception('Renamed %s but could not update its metadata index', path)
-        return name
+            LOGGER.exception('Updated %s but could not update its metadata index', path)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

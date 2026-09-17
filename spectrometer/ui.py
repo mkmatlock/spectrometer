@@ -51,6 +51,8 @@ class SpectrometerUI:
         self._delete_dialog = False
         self._filter_dialog = False
         self._scale_active = False
+        self._scale_save_future = None
+        self._scale_save_message = ''
         self._channel_active = False
         self._channel = None
         self._channels = {"Red", "Green", "Blue"}
@@ -502,6 +504,19 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_review(self):
+        if self.mode == 'saved' and self._scale_save_future is not None:
+            if self._scale_save_future.done():
+                future, self._scale_save_future = self._scale_save_future, None
+                try:
+                    future.result()
+                except Exception:
+                    LOGGER.exception('Could not save scale calibration to capture')
+                    self._scale_save_failed()
+                else:
+                    self._scale_save_message = ''
+                    self._review_list()
+                self._redraw = True
+            return
         if self.mode in ("review", "saved", "channel") and self.review.poll_names():
             self._redraw = True
         if self.mode == "saved":
@@ -555,9 +570,10 @@ class SpectrometerUI:
             self.mode = "saved"
             self._reset_peaks(frame.intensity)
             if self._scale_active:
+                self._scale_save_message = ''
                 self._saved_buttons = [("Modes", pygame.Rect(8, 264, 149, 48), self._ask_filter),
                                        ("Reset", pygame.Rect(165, 264, 150, 48), self._reset_scale),
-                                       ("Back", pygame.Rect(323, 264, 149, 48), self._review_list)]
+                                       ("Back", pygame.Rect(323, 264, 149, 48), self._finish_scale)]
                 self.buttons = self._saved_buttons
                 return
             self._saved_buttons = [
@@ -786,6 +802,29 @@ class SpectrometerUI:
             self._peaks.selected = None
         self._redraw = True
 
+    def _finish_scale(self):
+        if self._scale_save_future is not None:
+            return
+        try:
+            self._scale_save_future = self.review.save_scale(self.calibration_settings['scale'])
+        except Exception:
+            LOGGER.exception('Could not start saving scale calibration to capture')
+            self._scale_save_failed()
+        else:
+            self._scale_save_message = 'Saving calibration...'
+            self.buttons = []
+            self._peak_touch = None
+        self._redraw = True
+
+    def _scale_save_failed(self):
+        self._scale_save_message = 'Save failed. Retry or cancel.'
+        self.buttons = [('Retry', pygame.Rect(8, 264, 228, 48), self._finish_scale),
+                        ('Cancel', pygame.Rect(244, 264, 228, 48), self._cancel_scale_save)]
+
+    def _cancel_scale_save(self):
+        self._scale_save_message = ''
+        self._review_list()
+
     def _cancel_label(self):
         self._keypad_open = False
         self.buttons = self._peak_buttons
@@ -930,7 +969,10 @@ class SpectrometerUI:
 
     def _pointer_event(self, pointer, position, down):
         """Shared button handling for desktop events and polled hardware touch."""
-        if self.mode in ('shutdown', 'capture', 'rename'):
+        if self.mode == 'saved' and self._scale_save_future is not None:
+            self._pointer = self._pressed = None
+            return
+        if self.mode in ('shutdown', 'capture', 'rename') or (self.mode == 'saved' and self._scale_save_message):
             if down and self._pointer is None:
                 self._pointer = pointer
                 self._pressed = self._button_at(position)
@@ -1126,6 +1168,11 @@ class SpectrometerUI:
                 small = self._font(20)
                 text = small.render(self._peak_message, True, TEXT)
                 surface.blit(text, text.get_rect(center=(240, 224)))
+            if self._scale_save_message:
+                rect = pygame.Rect(48, 176, 384, 32)
+                pygame.draw.rect(surface, PANEL, rect, border_radius=4)
+                text = self._font(18).render(self._scale_save_message, True, '#ffd166')
+                surface.blit(text, text.get_rect(center=rect.center))
         if self._delete_dialog:
             for label, rect, _ in self._saved_buttons:
                 pygame.draw.rect(surface, BUTTON, rect, border_radius=6)

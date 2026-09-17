@@ -166,6 +166,14 @@ class ReviewList:
         # overwrite the newly saved name.
         return self._names_executor.submit(rename_capture, path, name)
 
+    def save_scale(self, labels):
+        """Save the completed scale to the displayed capture off the UI thread."""
+        from .capture import update_scale_calibration
+        if self.loaded_path is None:
+            raise ValueError('No capture is loaded')
+        return self._names_executor.submit(update_scale_calibration,
+                                           self.loaded_path, deepcopy(labels))
+
     def read_name(self, path):
         def read():
             from .catalog import display_name
@@ -288,7 +296,8 @@ class ReviewList:
             return False
         path = self.loaded_path
         try:
-            path.unlink()
+            from .capture import delete_capture
+            delete_capture(path)
         except OSError as exc:
             self.message = 'Delete failed: ' + str(exc)
             return False

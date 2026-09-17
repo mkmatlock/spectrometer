@@ -17,7 +17,7 @@ import threading
 from urllib.parse import urlsplit, parse_qs
 
 from .catalog import DuplicateSpectrumID, SpectrumCatalog, timestamp_id
-from .capture import rename_capture
+from .capture import delete_capture, rename_capture
 from .settings import network_status
 
 
@@ -141,7 +141,7 @@ class APIHandler(BaseHTTPRequestHandler):
             self._respond({'error': 'Spectrum not found'}, 404)
             return
         try:
-            path.unlink()
+            delete_capture(path)
         except FileNotFoundError:
             self._respond({'error': 'Spectrum not found'}, 404)
         except OSError:

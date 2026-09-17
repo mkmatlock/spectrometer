@@ -12,7 +12,6 @@
   <header class="header">
     <a class="brand" href="/" aria-label="Spectrometer home"><span class="brand-mark" aria-hidden="true">▥</span> Spectrometer</a>
     <nav aria-label="Activities">
-      <button id="review-nav" aria-current="page" data-action>Review</button>
       <button id="capture-nav" class="primary" data-action>Capture</button>
       <button id="settings-nav" data-action>Settings</button>
     </nav>
@@ -25,7 +24,7 @@
           <div class="section-head"><div><p class="eyebrow">LOCAL STORAGE</p><h1>Recorded spectra</h1></div><button id="refresh" class="quiet" data-action>Refresh</button></div>
           <p id="list-summary" class="secondary">Loading spectra…</p>
           <div id="spectrum-list" class="spectrum-list" role="group" aria-label="Saved spectra"></div>
-          <div class="library-actions"><button id="display" class="primary" data-action disabled>Display</button><button id="rename" data-action disabled>Rename</button><button id="back" data-action disabled>Back</button></div>
+          <div class="library-actions"><button id="display" class="primary" data-action disabled>Display</button></div>
         </aside>
         <section class="viewer panel" aria-label="Spectrum display">
           <div id="empty-view" class="empty"><span class="empty-mark" aria-hidden="true">∿</span><h2>Select a spectrum</h2><p>Choose a recording and press Display.</p></div>
@@ -51,17 +50,16 @@
               </div>
             </div>
             <p id="fit-error" class="error" role="status" hidden></p>
-            <div class="viewer-actions"><button id="delete" class="danger quiet" data-action>Delete</button></div>
+            <div class="viewer-actions"><button id="rename" data-action disabled>Rename</button><button id="delete" class="danger quiet" data-action>Delete</button></div>
           </div>
         </section>
       </div>
     </section>
-    <section id="settings-view" class="panel settings" hidden aria-labelledby="settings-title">
-      <div class="section-head"><div><p class="eyebrow">INSTRUMENT</p><h1 id="settings-title">Settings</h1></div><span class="badge">Read only</span></div>
-      <div id="settings-content"></div>
-      <button id="settings-back" data-action>Back</button>
-    </section>
   </main>
+  <dialog id="settings-dialog" class="settings" aria-labelledby="settings-title">
+    <div class="section-head"><div><p class="eyebrow">INSTRUMENT</p><h2 id="settings-title">Settings</h2></div><div class="settings-heading-actions"><span class="badge">Read only</span><button id="settings-close" class="quiet" type="button" aria-label="Close settings">×</button></div></div>
+    <div id="settings-content"></div>
+  </dialog>
   <dialog id="name-dialog" aria-labelledby="name-title">
     <form id="name-form">
       <p class="eyebrow">SPECTRUM</p><h2 id="name-title">Name spectrum</h2>

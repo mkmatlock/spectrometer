@@ -177,17 +177,22 @@ async function launch() {
 test('review sorts and selects recordings, displays the saved spectrum, and marks calibrated peaks and valleys', async () => {
   const app = await launch(), {$, calls} = app;
   assert.equal($('display').disabled, true);
+  assert.equal($('rename').disabled, true);
   assert.ok($('spectrum-modes'));
-  for (const id of ['modes', 'modes-dialog', 'modes-back']) assert.equal(app.dom.ids.has(id), false);
+  for (const id of ['modes', 'modes-dialog', 'modes-back', 'back', 'review-nav', 'settings-view', 'settings-back']) {
+    assert.equal(app.dom.ids.has(id), false, `${id} is removed`);
+  }
   const modeButtons = [...app.dom.querySelectorAll('[data-channel]'), $('emission-toggle'), $('blackbody-toggle')];
   assert.ok(modeButtons.every(button => button.disabled), 'inline modes require a displayed spectrum');
   assert.match(allText($('spectrum-list').children[0]), /New lamp/);
   await app.select(0);
   assert.equal($('display').disabled, false);
+  assert.equal($('rename').disabled, true, 'selecting a list entry does not enable viewer actions');
   await app.click('display');
   assert.deepEqual(calls.map(call => call.path), ['/list', '/spectrum/2000']);
   assert.equal($('record-name').textContent, 'New lamp');
   assert.equal($('spectrum-view').hidden, false);
+  assert.equal($('rename').disabled, false);
   assert.ok(modeButtons.every(button => !button.disabled), 'inline modes are ready without opening a dialog');
   assert.equal($('axis-label').textContent, 'Wavelength (nm)');
   assert.ok($('slice').context.image.data.some(value => value));
@@ -210,8 +215,6 @@ test('review sorts and selects recordings, displays the saved spectrum, and mark
   await app.click('blackbody-toggle');
   assert.equal($('temperature').textContent, '');
   assert.equal(calls.length, 2, 'display modes never write the recording');
-  await app.click('back');
-  assert.equal($('spectrum-view').hidden, true);
   await app.select(1); await app.click('display');
   assert.equal($('axis-label').textContent, 'Pixel');
   await $('plot').dispatch('keydown', {key: 'ArrowRight'});
@@ -256,20 +259,59 @@ test('rename prepopulates the current name and updates both list and displayed t
   assert.equal($('spectrum-view').hidden, true);
   assert.equal($('spectrum-list').children.length, 1);
   assert.equal($('display').disabled, true);
+  assert.equal($('rename').disabled, true);
 });
 
-test('settings use current API values with no editing or calibration controls', async () => {
+test('rename targets the displayed spectrum even when another list entry is selected', async () => {
+  const app = await launch(), {$, calls, records} = app;
+  await app.select(0); await app.click('display');
+  await app.select(1);
+  await app.click('rename');
+  assert.equal($('name-input').value, 'New lamp');
+  await app.submit('Displayed lamp');
+  assert.deepEqual(calls.at(-1), {method: 'PATCH', path: '/spectrum/2000', body: '{"name":"Displayed lamp"}'});
+  assert.equal($('record-name').textContent, 'Displayed lamp');
+  assert.equal(records.get(2000).name, 'Displayed lamp');
+  assert.equal(records.get(1000).name, 'Old lamp');
+  assert.equal($('spectrum-list').children[1].getAttribute('aria-pressed'), 'true');
+  await app.click('display');
+  assert.equal($('record-name').textContent, 'Old lamp');
+});
+
+test('settings show read-only API values in a dismissible dialog and preserve the underlying spectrum', async () => {
   const app = await launch(), {$, calls} = app;
+  await app.select(0); await app.click('display');
+  await app.dom.querySelectorAll('[data-channel]')[0].dispatch('click');
+  await app.click('emission-toggle');
+  await $('plot').dispatch('click', {clientX: 132, clientY: 323});
+  await app.select(1);
+  const spectrumRequests = calls.filter(call => call.path.startsWith('/spectrum/')).length;
   await app.click('settings-nav');
   assert.equal(calls.at(-1).path, '/settings');
-  assert.equal($('settings-view').hidden, false);
-  assert.equal($('review-view').hidden, true);
+  assert.equal($('settings-dialog').tagName, 'DIALOG');
+  assert.equal($('settings-dialog').open, true);
+  assert.equal($('review-view').hidden, false);
+  assert.equal($('spectrum-view').hidden, false);
   const text = allText($('settings-content'));
   for (const value of ['5 fps', '4056 × 3040', '12 ms', '3 frames', '192.168.1.163',
     'Lab Wi-Fi', '0, 1550, 3500, 1800', 'Pixel 100', '650 nm', '0 – 2000']) assert.ok(text.includes(value), value);
   assert.ok(allNodes($('settings-content')).every(node => !['INPUT', 'SELECT', 'BUTTON'].includes(node.tagName)));
-  await app.click('settings-back');
-  assert.equal($('settings-view').hidden, true);
+  const dismissals = [() => app.click('settings-close'), () => $('settings-dialog').dispatch('cancel')];
+  for (const [index, close] of dismissals.entries()) {
+    await close();
+    assert.equal($('settings-dialog').open, false);
+    assert.equal($('record-name').textContent, 'New lamp');
+    assert.equal($('channel-label').textContent, 'Green · Blue');
+    assert.equal($('mode-label').textContent, 'Absorption');
+    assert.equal($('peak-label').textContent, '500.0 nm');
+    assert.equal($('feature-dialog').hidden, false);
+    assert.equal($('spectrum-list').children[1].getAttribute('aria-pressed'), 'true');
+    assert.equal(calls.filter(call => call.path.startsWith('/spectrum/')).length, spectrumRequests);
+    if (index === 0) {
+      await app.click('settings-nav');
+      assert.equal($('settings-dialog').open, true);
+    }
+  }
   assert.ok(calls.every(call => call.method === 'GET'));
 });
 
@@ -338,7 +380,7 @@ async function clickLabel(app, label) {
   await app.$('plot').dispatch('click', {clientX: x + 2, clientY: y});
 }
 
-test('review label dialog retargets peaks and keyboard arrows; Cancel and Back clear the marker', async () => {
+test('review label dialog retargets peaks and keyboard arrows; Cancel, Escape, and reopening clear the marker', async () => {
   const app = await launch(), {$, calls} = app;
   await openNewest(app);
   await selectMiddlePeak(app);
@@ -361,11 +403,9 @@ test('review label dialog retargets peaks and keyboard arrows; Cancel and Back c
   assert.equal($('feature-dialog').hidden, true);
   assert.equal($('peak-label').textContent, '');
   await selectMiddlePeak(app);
-  await app.click('back');
-  assert.equal($('feature-dialog').hidden, true);
-  assert.equal($('peak-label').textContent, '');
   await app.click('display');
   assert.equal($('feature-dialog').hidden, true);
+  assert.equal($('peak-label').textContent, '');
   assert.equal($('plot').context.arcs.length, 0);
   assert.ok(calls.every(call => call.method === 'GET'), 'selection and cancellation never save');
 });
@@ -392,7 +432,6 @@ test('review label entry saves the sensor pixel and text, redraws labels across 
   labelOnCanvas(app, 'Hydrogen α');
   await app.click('emission-toggle');
   labelOnCanvas(app, 'Hydrogen α');
-  await app.click('back');
   await app.click('display');
   labelOnCanvas(app, 'Hydrogen α');
   assert.equal($('feature-dialog').hidden, true);
@@ -493,7 +532,7 @@ test('pending annotation saves block duplicate submissions, retargeting, mode ch
   await $('plot').dispatch('click', {clientX: 78, clientY: 307});
   await $('plot').dispatch('keydown', {key: 'ArrowRight'});
   await app.click('emission-toggle');
-  await app.click('back');
+  await app.click('display');
   await app.click('name-cancel');
   const escape = await $('name-dialog').dispatch('cancel');
   assert.equal(escape.defaultPrevented, true);

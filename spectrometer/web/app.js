@@ -4,7 +4,7 @@ import {drawPeakLabels, normalizePeakLabels, hitTestPeakLabel} from './annotatio
 const $ = id => document.getElementById(id);
 const state = {entries: [], selected: null, id: null, prepared: null, display: null,
   channels: ['Red', 'Green', 'Blue'], absorption: false, blackbody: false,
-  fit: null, peak: null, labels: {}, busy: false, activity: 'review', nameAction: null};
+  fit: null, peak: null, labels: {}, busy: false, nameAction: null};
 let plotBounds = null;
 let labelBoxes = [];
 let resizePending = false;
@@ -16,8 +16,7 @@ function status(message = '', error = false) {
 function controls() {
   document.querySelectorAll('[data-action], .record').forEach(button => { button.disabled = state.busy; });
   $('display').disabled = state.busy || state.selected === null;
-  $('rename').disabled = state.busy || state.selected === null;
-  $('back').disabled = state.busy || state.id === null;
+  $('rename').disabled = state.busy || state.id === null;
   document.querySelectorAll('.mode-toggle').forEach(button => { button.disabled = state.busy || !state.display; });
   $('delete').disabled = state.busy || state.id === null;
   document.querySelectorAll('#name-dialog button, #name-input, #delete-dialog button').forEach(el => { el.disabled = state.busy; });
@@ -48,17 +47,6 @@ async function api(path, options = {}) {
     if (error instanceof TypeError) throw new Error('Cannot reach the spectrometer. Check the connection and try again.');
     throw error;
   } finally { clearTimeout(timeout); }
-}
-function switchActivity(activity) {
-  state.activity = activity;
-  if (activity !== 'review') dismissFeature(false);
-  $('review-view').hidden = activity !== 'review';
-  $('settings-view').hidden = activity !== 'settings';
-  for (const name of ['review', 'settings']) {
-    if (name === activity) $(`${name}-nav`).setAttribute('aria-current', 'page');
-    else $(`${name}-nav`).removeAttribute('aria-current');
-  }
-  if (activity === 'review') requestAnimationFrame(draw);
 }
 function renderList() {
   const list = $('spectrum-list');
@@ -111,7 +99,7 @@ async function loadSpectrum(id) {
   if (entry && !entry.timestamp) entry.timestamp = formatDate(record.timestamp);
   $('record-date').textContent = entry?.timestamp || formatDate(record.timestamp);
   $('empty-view').hidden = true; $('spectrum-view').hidden = false;
-  switchActivity('review'); renderList(); updateDisplay();
+  renderList(); updateDisplay();
   if (matchMedia('(max-width: 850px)').matches) $('spectrum-view').scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 function formatDate(value) {
@@ -196,7 +184,7 @@ function canvasContext(canvas) {
   return {ctx, width, height};
 }
 function draw() {
-  if (!state.display || state.activity !== 'review') return;
+  if (!state.display) return;
   const {ctx, width, height} = canvasContext($('plot'));
   if (!width) return;
   const left = 24, right = width - 24, top = 16, bottom = height - 32;
@@ -267,7 +255,7 @@ function draw() {
   slice.getContext('2d').putImageData(new ImageData(pixels, display.width, display.height), 0, 0);
 }
 function selectFeature(event) {
-  if (state.busy || !state.display || !plotBounds || $('name-dialog').open || $('delete-dialog').open) return;
+  if (state.busy || !state.display || !plotBounds || $('name-dialog').open || $('delete-dialog').open || $('settings-dialog').open) return;
   const box = $('plot').getBoundingClientRect();
   const px = event.clientX - box.left, py = event.clientY - box.top;
   const {left, right, top, bottom, x, y} = plotBounds;
@@ -288,15 +276,14 @@ function selectFeature(event) {
 }
 function openName(action) {
   if (state.busy) return;
-  const entry = state.entries.find(e => e.id === state.selected);
-  if (action === 'rename' && !entry) return;
+  if (action === 'rename' && state.id === null) return;
   if (action === 'annotation' && state.peak === null) return;
   if (action !== 'annotation') dismissFeature();
-  state.nameAction = {action, id: action === 'annotation' ? state.id : entry?.id, pixel: state.peak};
+  state.nameAction = {action, id: state.id, pixel: state.peak};
   $('name-title').textContent = action === 'annotation' ? `Label ${state.absorption ? 'valley' : 'peak'}` : action === 'rename' ? 'Rename spectrum' : 'Capture spectrum';
   $('name-label').textContent = action === 'annotation' ? 'Label' : 'Name';
   $('name-help').textContent = action === 'annotation' ? peakPosition(state.peak) : action === 'rename' ? 'The recording and its collection date stay the same.' : 'The camera must be running on the device.';
-  $('name-input').value = action === 'rename' ? entry.name : '';
+  $('name-input').value = action === 'rename' ? $('record-name').textContent : '';
   $('name-error').textContent = '';
   $('feature-dialog').hidden = true;
   $('name-dialog').showModal(); $('name-input').focus(); $('name-input').select();
@@ -330,7 +317,7 @@ async function submitName(event) {
       $('name-dialog').close();
       // Once saved, failures while viewing must not invite duplicate capture.
       state.entries.unshift({id: captured, name, timestamp: ''});
-      state.selected = captured; renderList(); switchActivity('review');
+      state.selected = captured; renderList();
       status('Capture saved. Loading spectrum…');
       await loadSpectrum(captured);
     }
@@ -360,16 +347,15 @@ async function showSettings() {
   const points = Object.entries(calibration.scale || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
   content.append(settingsGroup('Scale calibration', points.length ? points.map(([pixel, nm]) => [`Pixel ${pixel}`, `${nm} nm`]) : [['Labeled peaks', 'None']]));
   content.append(settingsGroup('Channel calibration', ['Red', 'Green', 'Blue'].map(channel => [channel, calibration.channel_ranges?.[channel]?.join(' – ') || 'Full sensor range'])));
-  switchActivity('settings');
+  $('settings-dialog').showModal();
+  $('settings-close').focus();
 }
 $('refresh').onclick = () => run(fetchList, 'Loading recordings…');
 $('display').onclick = () => run(() => loadSpectrum(state.selected), 'Loading spectrum…');
-$('back').onclick = () => { clearSpectrum(); status(); $('spectrum-list').scrollIntoView({block: 'nearest'}); };
 $('rename').onclick = () => openName('rename');
 $('capture-nav').onclick = () => openName('capture');
-$('review-nav').onclick = () => { switchActivity('review'); status(); };
 $('settings-nav').onclick = () => run(showSettings, 'Loading settings…');
-$('settings-back').onclick = () => { switchActivity('review'); status(); };
+$('settings-close').onclick = () => $('settings-dialog').close();
 $('name-form').onsubmit = submitName;
 $('name-cancel').onclick = cancelName;
 $('name-dialog').addEventListener('cancel', event => { event.preventDefault(); cancelName(); });
@@ -404,7 +390,7 @@ $('delete-confirm').onclick = () => run(async () => {
 }, 'Deleting spectrum…', 'delete-error');
 $('plot').addEventListener('click', selectFeature);
 $('plot').addEventListener('keydown', event => {
-  if (state.busy || !state.display || $('name-dialog').open || $('delete-dialog').open) return;
+  if (state.busy || !state.display || $('name-dialog').open || $('delete-dialog').open || $('settings-dialog').open) return;
   if (event.key === 'Escape') { event.preventDefault(); dismissFeature(); return; }
   if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
   event.preventDefault();

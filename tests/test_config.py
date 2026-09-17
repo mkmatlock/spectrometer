@@ -3,7 +3,7 @@ from pathlib import Path
 import pickle
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -67,10 +67,11 @@ class ConfigTests(unittest.TestCase):
                 SettingsStore(self.path)
             self.assertEqual(self.path.read_bytes(), original)
 
-    def test_label_accept_modify_delete_persist_and_failed_save_keeps_label(self):
+    def test_label_accept_modify_and_delete_leave_persistent_settings_unchanged(self):
         store = SettingsStore(self.path)
+        persist = Mock(side_effect=lambda data: store.update(calibration=data))
         ui = SpectrometerUI(calibration_settings=deepcopy(store.data['calibration']),
-                            on_calibration_changed=lambda data: store.update(calibration=data))
+                            on_calibration_changed=persist)
         self.addCleanup(ui.review.close)
         self.addCleanup(ui.settings_view.close)
         values = np.zeros(3500, np.int32)
@@ -84,14 +85,14 @@ class ConfigTests(unittest.TestCase):
             ui._label_peak()
             ui._label_input = label
             ui._accept_label()
-            self.assertEqual(SettingsStore(self.path).data['calibration']['scale'], {1000: float(label)})
+            self.assertEqual(ui._scale_labels, {1000: float(label)})
+            self.assertEqual(SettingsStore(self.path).data['calibration']['scale'], {})
         ui._select_peak(tuple(ui._peaks.positions[0]))
-        with patch.object(store, '_write', side_effect=OSError('Disk full')):
-            with self.assertLogs('spectrometer.ui', level='ERROR'):
-                ui._delete_peak_label()
-        self.assertEqual(ui.calibration_settings['scale'], {1000: 532.2})
         ui._delete_peak_label()
+        self.assertEqual(ui._scale_labels, {})
+        self.assertEqual(ui.calibration_settings['scale'], {})
         self.assertEqual(SettingsStore(self.path).data['calibration']['scale'], {})
+        persist.assert_not_called()
 
     def test_custom_sensor_area_capture_review_and_peak_coordinates(self):
         roi = (100, 20, 600, 40)

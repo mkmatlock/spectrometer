@@ -6,12 +6,13 @@ import pickle
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
 from spectrometer import capture
 from spectrometer.catalog import SpectrumCatalog
+from spectrometer.config import DEFAULTS, SettingsStore
 from spectrometer.review import ReviewList, load_spectrum
 from spectrometer.ui import SpectrometerUI
 from tests.spectrum_fixtures import spectrum_record
@@ -29,8 +30,8 @@ class ScaleCaptureUpdateTests(unittest.TestCase):
         record['averaged_camera_output'][:] = (10, 20, 30)
         return record
 
-    def make_ui(self, directory, path):
-        ui = SpectrometerUI(review_directory=directory)
+    def make_ui(self, directory, path, **kwargs):
+        ui = SpectrometerUI(review_directory=directory, **kwargs)
         self.addCleanup(ui.review.close)
         self.addCleanup(ui.settings_view.close)
         ui._open_review()
@@ -179,12 +180,18 @@ class ScaleCaptureUpdateTests(unittest.TestCase):
             finally:
                 review.close()
 
-    def test_back_waits_for_save_and_returns_to_list_on_success(self):
+    def test_accept_waits_for_save_and_returns_to_list_on_success(self):
         with tempfile.TemporaryDirectory() as directory:
             path = capture.save_capture(self.make_record(), directory)
             ui = self.make_ui(directory, path)
-            self.assertEqual(dict((label, action) for label, _, action in ui.buttons)['Back'],
-                             ui._finish_scale)
+            self.assertEqual([label for label, _, _ in ui.buttons],
+                             ['Accept', 'Reset', 'Modes', 'Back'])
+            self.assertEqual(ui.buttons[0][2], ui._finish_scale)
+            self.assertEqual(ui.buttons[-1][2], ui._cancel_scale)
+            self.assertEqual([rect.left for _, rect, _ in ui.buttons],
+                             sorted(rect.left for _, rect, _ in ui.buttons))
+            original = deepcopy(ui.calibration_settings)
+            ui._update_scale(500, 400.0)
             future = Future()
             with patch.object(ui.review, 'save_scale', return_value=future) as save:
                 ui._finish_scale()
@@ -199,10 +206,12 @@ class ScaleCaptureUpdateTests(unittest.TestCase):
                 ui._finish_scale()
                 ui._poll_review()
                 self.assertEqual(ui.mode, 'saved')
+                self.assertEqual(ui.calibration_settings, original)
                 save.assert_called_once()
                 future.set_result(None)
                 ui._poll_review()
             self.assertEqual(ui.mode, 'review')
+            self.assertEqual(ui.calibration_settings['scale'], {500: 400.0})
             self.assertEqual([label for label, _, _ in ui.buttons], ['Display', 'Rename', 'Back'])
 
     def test_failed_save_keeps_scale_graph_and_allows_retry(self):
@@ -232,6 +241,7 @@ class ScaleCaptureUpdateTests(unittest.TestCase):
             path = capture.save_capture(self.make_record(), directory)
             original = path.read_bytes()
             ui = self.make_ui(directory, path)
+            original_settings = deepcopy(ui.calibration_settings)
             ui._update_scale(500, 400.0)
             failed = Future()
             failed.set_exception(OSError('Read-only file'))
@@ -248,6 +258,7 @@ class ScaleCaptureUpdateTests(unittest.TestCase):
             self.assertEqual(ui.mode, 'review')
             self.assertFalse(ui._scale_save_message)
             self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(ui.calibration_settings, original_settings)
 
     def test_completed_add_modify_delete_and_reset_are_used_by_review(self):
         for operation in ('modify', 'delete', 'reset'):
@@ -262,12 +273,13 @@ class ScaleCaptureUpdateTests(unittest.TestCase):
                     self.assertTrue(ui._update_scale(500, None))
                 else:
                     ui._reset_scale()
-                expected = deepcopy(ui.calibration_settings['scale'])
+                    ui._confirm_scale_reset()
+                expected = deepcopy(ui._scale_labels)
                 submitted = []
                 original_save = ui.review.save_scale
 
-                def save(labels):
-                    future = original_save(labels)
+                def save(labels, **kwargs):
+                    future = original_save(labels, **kwargs)
                     submitted.append(future)
                     return future
 
@@ -287,6 +299,108 @@ class ScaleCaptureUpdateTests(unittest.TestCase):
                 # A later instrument recalibration must not affect this saved capture.
                 ui.calibration_settings['scale'] = {200: 1000.0, 500: 900.0}
                 self.assertEqual(load_spectrum(path).calibration['scale'], expected)
+
+    def test_back_discards_add_modify_delete_and_reset_then_loads_fresh_draft(self):
+        for operation in ('add', 'modify', 'delete', 'reset'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
+                path = capture.save_capture(self.make_record(), directory)
+                original_bytes = path.read_bytes()
+                store = SettingsStore(Path(directory) / '.spectrometer_config')
+                store.update(calibration={'scale': {200: 700.0, 500: 450.0}})
+                original_settings = deepcopy(store.data['calibration'])
+                camera = Mock()
+                camera.settings_snapshot.return_value = deepcopy(DEFAULTS['camera'])
+                persist = Mock(side_effect=lambda data: store.update(calibration=data))
+                ui = self.make_ui(directory, path, camera=camera,
+                                  calibration_settings=deepcopy(original_settings),
+                                  on_calibration_changed=persist)
+                camera.set_calibration.reset_mock()
+                self.assertEqual(ui._scale_labels, original_settings['scale'])
+                if operation == 'add':
+                    ui._update_scale(350, 550.0)
+                elif operation == 'modify':
+                    ui._update_scale(500, 400.0)
+                elif operation == 'delete':
+                    ui._update_scale(200, None)
+                else:
+                    ui._reset_scale()
+                    ui._confirm_scale_reset()
+                self.assertNotEqual(ui._scale_labels, original_settings['scale'])
+                ui._select_peak(ui._peaks.positions[0])
+                ui._back_peak()
+                ui._cancel_scale()
+                self.assertEqual(ui.mode, 'review')
+                self.assertIsNone(ui._peaks.marker)
+                self.assertEqual(path.read_bytes(), original_bytes)
+                self.assertEqual(ui.calibration_settings, original_settings)
+                self.assertEqual(SettingsStore(store.path).data['calibration'], original_settings)
+                persist.assert_not_called()
+                camera.set_calibration.assert_not_called()
+                ui._display_capture()
+                ui.review.future.result(timeout=5)
+                ui._poll_review()
+                self.assertEqual(ui.mode, 'saved')
+                self.assertEqual(ui._scale_labels, original_settings['scale'])
+                self.assertIsNot(ui._scale_labels, ui.calibration_settings['scale'])
+
+    def test_accept_persists_settings_and_capture_then_publishes_camera_calibration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = self.make_record()
+            original['peak_labels'] = {350: 'Reference line'}
+            path = capture.save_capture(original, directory)
+            store = SettingsStore(Path(directory) / '.spectrometer_config')
+            before = deepcopy(store.data['calibration'])
+            camera = Mock()
+            camera.settings_snapshot.return_value = deepcopy(DEFAULTS['camera'])
+            ui = self.make_ui(directory, path, camera=camera,
+                              calibration_settings=deepcopy(before),
+                              on_calibration_changed=lambda data: store.update(calibration=data))
+            camera.set_calibration.reset_mock()
+            ui._update_scale(200, 700.0)
+            ui._update_scale(500, 400.0)
+            self.assertEqual(ui.calibration_settings, before)
+            self.assertEqual(store.data['calibration'], before)
+            camera.set_calibration.assert_not_called()
+            ui._finish_scale()
+            ui._scale_save_future.result(timeout=5)
+            ui._poll_review()
+            expected = dict(before, scale={200: 700.0, 500: 400.0})
+            self.assertEqual(ui.calibration_settings, expected)
+            self.assertEqual(SettingsStore(store.path).data['calibration'], expected)
+            camera.set_calibration.assert_called_once_with(expected)
+            updated = pickle.loads(path.read_bytes())
+            self.assertEqual(updated['instrument_settings']['calibration_settings']['scale'], expected['scale'])
+            self.assertEqual(updated['peak_labels'], original['peak_labels'])
+            for key in ('name', 'timestamp', 'spectrum_roi'):
+                self.assertEqual(updated[key], original[key])
+            for key in ('spectrum_intensity', 'averaged_camera_output'):
+                np.testing.assert_array_equal(updated[key], original[key])
+
+    def test_settings_write_failure_does_not_publish_draft_or_rewrite_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = capture.save_capture(self.make_record(), directory)
+            original_bytes = path.read_bytes()
+            store = SettingsStore(Path(directory) / '.spectrometer_config')
+            before = deepcopy(store.data['calibration'])
+            camera = Mock()
+            camera.settings_snapshot.return_value = deepcopy(DEFAULTS['camera'])
+            ui = self.make_ui(directory, path, camera=camera,
+                              calibration_settings=deepcopy(before),
+                              on_calibration_changed=lambda data: store.update(calibration=data))
+            camera.set_calibration.reset_mock()
+            ui._update_scale(500, 400.0)
+            with patch.object(store, '_write', side_effect=OSError('Disk full')):
+                ui._finish_scale()
+                self.assertIsInstance(ui._scale_save_future.exception(timeout=5), OSError)
+                with self.assertLogs('spectrometer.ui', level='ERROR'):
+                    ui._poll_review()
+            self.assertEqual(ui.mode, 'saved')
+            self.assertEqual([label for label, _, _ in ui.buttons], ['Retry', 'Cancel'])
+            self.assertEqual(ui._scale_labels, {500: 400.0})
+            self.assertEqual(ui.calibration_settings, before)
+            self.assertEqual(SettingsStore(store.path).data['calibration'], before)
+            self.assertEqual(path.read_bytes(), original_bytes)
+            camera.set_calibration.assert_not_called()
 
 
 if __name__ == '__main__':

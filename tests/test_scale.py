@@ -15,7 +15,7 @@ from tests.spectrum_fixtures import spectrum_record
 
 
 class ScaleTests(unittest.TestCase):
-    def test_reset_removes_all_labels_and_persists(self):
+    def test_reset_requires_confirmation_and_only_clears_draft(self):
         with tempfile.TemporaryDirectory() as directory:
             store = SettingsStore(Path(directory) / '.spectrometer_config')
             store.update(calibration={'scale': {1000: 500.0, 2500: 700.0}})
@@ -23,9 +23,27 @@ class ScaleTests(unittest.TestCase):
                 calibration_settings=deepcopy(store.data['calibration']),
                 on_calibration_changed=lambda data: store.update(calibration=data))
             try:
+                ui.mode = 'saved'
+                ui._scale_active = True
+                ui._saved_buttons = []
+                original = deepcopy(ui.calibration_settings)
                 ui._reset_scale()
-                self.assertEqual(ui.calibration_settings['scale'], {})
-                self.assertEqual(SettingsStore(store.path).data['calibration']['scale'], {})
+                self.assertTrue(ui._scale_reset_dialog)
+                self.assertEqual(ui._scale_labels, original['scale'])
+                with patch.object(ui, '_select_peak') as select:
+                    ui._pointer_event('lcd', (100, 100), True)
+                    ui._pointer_event('lcd', (100, 100), False)
+                    select.assert_not_called()
+                ui._cancel_scale_reset()
+                self.assertFalse(ui._scale_reset_dialog)
+                self.assertEqual(ui._scale_labels, original['scale'])
+                self.assertIs(ui.buttons, ui._saved_buttons)
+                ui._reset_scale()
+                ui._confirm_scale_reset()
+                self.assertFalse(ui._scale_reset_dialog)
+                self.assertEqual(ui._scale_labels, {})
+                self.assertEqual(ui.calibration_settings, original)
+                self.assertEqual(SettingsStore(store.path).data['calibration'], original)
             finally:
                 ui.review.close()
                 ui.settings_view.close()
@@ -40,9 +58,10 @@ class ScaleTests(unittest.TestCase):
             values[1200] = 10000
             ui._plot.update(values)
             ui._reset_peaks(values)
-            ui._saved_buttons = [('Modes', pygame.Rect(8, 264, 149, 48), ui._ask_filter),
-                                 ('Reset', pygame.Rect(165, 264, 150, 48), ui._reset_scale),
-                                 ('Back', pygame.Rect(323, 264, 149, 48), ui._review_list)]
+            ui._saved_buttons = [('Accept', pygame.Rect(8, 264, 110, 48), ui._finish_scale),
+                                 ('Reset', pygame.Rect(126, 264, 110, 48), ui._reset_scale),
+                                 ('Modes', pygame.Rect(244, 264, 110, 48), ui._ask_filter),
+                                 ('Back', pygame.Rect(362, 264, 110, 48), ui._cancel_scale)]
             ui._ask_filter()
             ui._choose_filter('Emission')
             self.assertEqual(ui.buttons[3][0], 'Absorption')
@@ -53,7 +72,7 @@ class ScaleTests(unittest.TestCase):
             self.assertEqual(ui._peak_message, 'Pixel 1200')
             self.assertEqual([b[0] for b in ui.buttons], ['Label', 'Back'])
             ui._back_peak()
-            self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Reset', 'Back'])
+            self.assertEqual([b[0] for b in ui.buttons], ['Accept', 'Reset', 'Modes', 'Back'])
             ui._ask_filter()
             ui._choose_filter('Absorption')
             self.assertFalse(ui._absorption)
@@ -99,7 +118,7 @@ class ScaleTests(unittest.TestCase):
                 ui.review.future.result(timeout=5)
                 ui._poll_review()
                 self.assertEqual(ui.mode, 'saved')
-                self.assertEqual([b[0] for b in ui.buttons], ['Modes', 'Reset', 'Back'])
+                self.assertEqual([b[0] for b in ui.buttons], ['Accept', 'Reset', 'Modes', 'Back'])
                 position = tuple(ui._peaks.positions[0] + (2, 2))
                 ui._pointer_event('lcd', position, True)
                 ui._pointer_event('lcd', position, False)

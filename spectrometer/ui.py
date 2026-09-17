@@ -54,6 +54,8 @@ class SpectrometerUI:
         self._scale_active = False
         self._scale_save_future = None
         self._scale_save_message = ''
+        self._scale_pending_settings = None
+        self._scale_reset_dialog = False
         self._channel_active = False
         self._channel = None
         self._channels = {"Red", "Green", "Blue"}
@@ -76,6 +78,7 @@ class SpectrometerUI:
         from .config import DEFAULTS
         self.calibration_settings = (calibration_settings if calibration_settings is not None
                                      else deepcopy(DEFAULTS['calibration']))
+        self._scale_labels = deepcopy(self.calibration_settings['scale'])
         if self.camera is not None:
             self.camera.set_calibration(self.calibration_settings)
         self._plot.set_calibration(self.calibration_settings['scale'])
@@ -528,8 +531,13 @@ class SpectrometerUI:
                     future.result()
                 except Exception:
                     LOGGER.exception('Could not save scale calibration to capture')
+                    self._scale_pending_settings = None
                     self._scale_save_failed()
                 else:
+                    self.calibration_settings.update(self._scale_pending_settings)
+                    self._scale_pending_settings = None
+                    if self.camera is not None:
+                        self.camera.set_calibration(self.calibration_settings)
                     self._scale_save_message = ''
                     self._review_list()
                 self._redraw = True
@@ -590,9 +598,12 @@ class SpectrometerUI:
             self._reset_peaks(frame.intensity)
             if self._scale_active:
                 self._scale_save_message = ''
-                self._saved_buttons = [("Modes", pygame.Rect(8, 264, 149, 48), self._ask_filter),
-                                       ("Reset", pygame.Rect(165, 264, 150, 48), self._reset_scale),
-                                       ("Back", pygame.Rect(323, 264, 149, 48), self._finish_scale)]
+                self._scale_labels = deepcopy(self.calibration_settings['scale'])
+                self._scale_reset_dialog = False
+                self._saved_buttons = [("Accept", pygame.Rect(8, 264, 110, 48), self._finish_scale),
+                                       ("Reset", pygame.Rect(126, 264, 110, 48), self._reset_scale),
+                                       ("Modes", pygame.Rect(244, 264, 110, 48), self._ask_filter),
+                                       ("Back", pygame.Rect(362, 264, 110, 48), self._cancel_scale)]
                 self.buttons = self._saved_buttons
                 return
             self._saved_buttons = [
@@ -745,7 +756,7 @@ class SpectrometerUI:
             self._redraw = True
             return
         self._peak_dialog = True
-        if index in self.calibration_settings["scale"]:
+        if index in self._scale_labels:
             self.buttons = [("Modify", pygame.Rect(64, 248, 112, 48), self._label_peak),
                             ("Delete", pygame.Rect(184, 248, 112, 48), self._delete_peak_label),
                             ("Back", pygame.Rect(304, 248, 112, 48), self._back_peak)]
@@ -861,7 +872,7 @@ class SpectrometerUI:
     def _label_peak(self):
         if self._peaks.selected is not None:
             self._label_pixel = int(self._peaks.indices[self._peaks.selected])
-            existing = self.calibration_settings["scale"].get(self._label_pixel)
+            existing = self._scale_labels.get(self._label_pixel)
             self._label_input = "" if existing is None else format(existing, ".12f").rstrip("0").rstrip(".")
             self._label_error = ""
             self._keypad_open = True
@@ -900,55 +911,63 @@ class SpectrometerUI:
         self._back_peak()
 
     def _update_scale(self, pixel, value):
-        labels = self.calibration_settings["scale"].copy()
+        from .config import validate
+        if self._scale_save_future is not None:
+            return False
+        labels = self._scale_labels.copy()
         if value is None:
             labels.pop(pixel, None)
         else:
             labels[pixel] = value
         updated = dict(self.calibration_settings, scale=labels)
         try:
-            if self._on_calibration_changed is not None:
-                self._on_calibration_changed(updated)
-        except (OSError, ValueError):
-            LOGGER.exception("Could not save calibration settings")
-            self._label_error = "Could not save settings"
-            self._peak_message = "Could not save settings"
+            validate({'camera': self._camera_settings, 'calibration': updated})
+        except ValueError:
+            self._label_error = "Invalid calibration value"
+            self._peak_message = "Invalid calibration value"
             self._redraw = True
             return False
-        self.calibration_settings.update(updated)
-        if self.camera is not None:
-            self.camera.set_calibration(self.calibration_settings)
+        self._scale_labels = labels
+        self._redraw = True
         return True
 
     def _reset_scale(self):
-        updated = dict(self.calibration_settings, scale={})
-        try:
-            if self._on_calibration_changed is not None:
-                self._on_calibration_changed(updated)
-        except (OSError, ValueError):
-            LOGGER.exception("Could not reset calibration settings")
-            self._review_peak_label = "Could not save settings"
-            self._redraw = True
+        if self._scale_save_future is not None:
             return
-        self.calibration_settings.update(updated)
-        if self.camera is not None:
-            self.camera.set_calibration(self.calibration_settings)
-        if self._peaks is not None:
-            self._peaks.selected = None
+        self._scale_reset_dialog = True
+        self._peak_touch = self._annotation_touch = None
+        self.buttons = [('Confirm', pygame.Rect(64, 168, 172, 48), self._confirm_scale_reset),
+                        ('Cancel', pygame.Rect(244, 168, 172, 48), self._cancel_scale_reset)]
+        self._redraw = True
+
+    def _confirm_scale_reset(self):
+        self._scale_labels = {}
+        self._clear_peak_selection()
+        self._cancel_scale_reset()
+
+    def _cancel_scale_reset(self):
+        self._scale_reset_dialog = False
+        self.buttons = self._saved_buttons
         self._redraw = True
 
     def _finish_scale(self):
+        from .config import validate
         if self._scale_save_future is not None:
             return
         try:
-            self._scale_save_future = self.review.save_scale(self.calibration_settings['scale'])
+            updated = dict(deepcopy(self.calibration_settings), scale=deepcopy(self._scale_labels))
+            validate({'camera': self._camera_settings, 'calibration': updated})
+            self._scale_save_future = self.review.save_scale(
+                self._scale_labels, save_settings=self._on_calibration_changed,
+                settings_before=self.calibration_settings, settings_after=updated)
+            self._scale_pending_settings = updated
         except Exception:
             LOGGER.exception('Could not start saving scale calibration to capture')
             self._scale_save_failed()
         else:
             self._scale_save_message = 'Saving calibration...'
             self.buttons = []
-            self._peak_touch = None
+            self._peak_touch = self._annotation_touch = None
         self._redraw = True
 
     def _scale_save_failed(self):
@@ -957,6 +976,15 @@ class SpectrometerUI:
                         ('Cancel', pygame.Rect(244, 264, 228, 48), self._cancel_scale_save)]
 
     def _cancel_scale_save(self):
+        self._cancel_scale()
+
+    def _cancel_scale(self):
+        if self._scale_save_future is not None:
+            return
+        self._scale_labels = deepcopy(self.calibration_settings['scale'])
+        self._scale_pending_settings = None
+        self._scale_reset_dialog = False
+        self._keypad_open = False
         self._scale_save_message = ''
         self._review_list()
 
@@ -1108,7 +1136,8 @@ class SpectrometerUI:
                 or (self.mode in ('saved', 'annotation') and self._annotation_future is not None)):
             self._pointer = self._pressed = None
             return
-        if self.mode in ('shutdown', 'capture', 'rename', 'annotation') or (self.mode == 'saved' and self._scale_save_message):
+        if (self.mode in ('shutdown', 'capture', 'rename', 'annotation')
+                or (self.mode == 'saved' and (self._scale_save_message or self._scale_reset_dialog))):
             if down and self._pointer is None:
                 self._pointer = pointer
                 self._pressed = self._button_at(position)
@@ -1329,7 +1358,7 @@ class SpectrometerUI:
                 pygame.draw.rect(surface, PANEL, rect, border_radius=4)
                 text = self._font(18).render(self._scale_save_message, True, '#ffd166')
                 surface.blit(text, text.get_rect(center=rect.center))
-        if self._delete_dialog:
+        if self._delete_dialog or self._scale_reset_dialog:
             for label, rect, _ in self._saved_buttons:
                 pygame.draw.rect(surface, BUTTON, rect, border_radius=6)
                 text = font.render(label, True, TEXT)
@@ -1339,10 +1368,12 @@ class SpectrometerUI:
             surface.blit(shade, (0, 0))
             pygame.draw.rect(surface, PANEL, (48, 88, 384, 144), border_radius=8)
             pygame.draw.rect(surface, BORDER, (48, 88, 384, 144), 1, border_radius=8)
-            text = font.render(self._delete_message, True, TEXT)
+            message = 'Clear all scale labels?' if self._scale_reset_dialog else self._delete_message
+            text = font.render(message, True, TEXT)
             surface.blit(text, text.get_rect(center=(240, 114)))
             small = self._font(18)
-            name = self.review.loaded_path.name if self.review.loaded_path else ""
+            name = ('Press Accept later to save the reset.' if self._scale_reset_dialog else
+                    self.review.loaded_path.name if self.review.loaded_path else "")
             text = small.render(name, True, MUTED)
             surface.blit(text, text.get_rect(center=(240, 142)))
         if self._calibration_dialog:
@@ -1394,7 +1425,7 @@ class SpectrometerUI:
         area = self._plot.AREA.move(self.spectrum_rect.topleft)
         font = self._font(18)
         occupied = []
-        for sensor_pixel, value in sorted(self.calibration_settings["scale"].items()):
+        for sensor_pixel, value in sorted(self._scale_labels.items()):
             pixel = sensor_pixel - self._plot.roi[0]
             if not 0 <= pixel < len(self._spectrum_intensity):
                 continue

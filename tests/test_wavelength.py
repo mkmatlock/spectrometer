@@ -44,7 +44,7 @@ class WavelengthTests(unittest.TestCase):
         self.assertIsNone(plot._background)
         self.assertIsNone(plot.scale)
 
-    def test_review_nm_scale_pixels_and_live_refresh_after_label_changes(self):
+    def test_review_nm_scale_pixels_and_live_scale_ignores_draft_changes(self):
         ui = SpectrometerUI(calibration_settings=dict(deepcopy(DEFAULTS['calibration']),
                                                      scale={1000: 700, 2000: 500}))
         self.addCleanup(ui.review.close)
@@ -70,7 +70,8 @@ class WavelengthTests(unittest.TestCase):
         ui._update_scale(2000, None)
         ui._scale_active = False
         ui._exit_settings()
-        self.assertIsNone(ui._plot.scale)
+        self.assertEqual(ui._plot.scale.wavelength(1500), 600)
         ui._update_scale(2000, 400)
         ui._exit_settings()
-        self.assertEqual(ui._plot.scale.wavelength(1500), 550)
+        self.assertEqual(ui._plot.scale.wavelength(1500), 600)
+        self.assertEqual(ui._scale_labels, {1000: 700, 2000: 400})

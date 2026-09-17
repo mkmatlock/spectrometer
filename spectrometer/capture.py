@@ -52,12 +52,25 @@ def rename_capture(path, name):
     return name
 
 
-def update_scale_calibration(path, labels):
+def update_scale_calibration(path, labels, *, save_settings=None,
+                             settings_before=None, settings_after=None):
     """Replace only this capture's wavelength labels, retaining its other calibration."""
     labels = deepcopy(labels)
+
+    # SettingsStore.update publishes atomically and only changes its in-memory
+    # data after that succeeds. Prepare the capture before updating the settings
+    # so a serialization failure cannot commit either half of the calibration.
+    commit = rollback = None
+    if save_settings is not None:
+        if not isinstance(settings_before, dict) or not isinstance(settings_after, dict):
+            raise ValueError('Previous and new settings are required to save calibration')
+        before, after = deepcopy(settings_before), deepcopy(settings_after)
+        commit = lambda: save_settings(after)
+        rollback = lambda: save_settings(before)
+
     def update(record):
         record['instrument_settings']['calibration_settings']['scale'] = labels
-    _update_capture(path, update)
+    _update_capture(path, update, commit=commit, rollback=rollback)
     return labels
 
 
@@ -97,12 +110,12 @@ def delete_capture(path):
         Path(path).unlink()
 
 
-def _update_capture(path, update):
+def _update_capture(path, update, *, commit=None, rollback=None):
     with _MUTATION_LOCK:
-        _replace_capture(Path(path), update)
+        _replace_capture(Path(path), update, commit=commit, rollback=rollback)
 
 
-def _replace_capture(path, update):
+def _replace_capture(path, update, *, commit=None, rollback=None):
     with path.open('rb') as source:
         record = pickle.load(source)
     update(record)
@@ -113,7 +126,19 @@ def _replace_capture(path, update):
             pickle.dump(record, output, protocol=pickle.HIGHEST_PROTOCOL)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temporary, path)
+        if commit is not None:
+            commit()
+        try:
+            os.replace(temporary, path)
+        except Exception as exc:
+            if commit is not None and rollback is not None:
+                try:
+                    rollback()
+                except Exception as rollback_exc:
+                    raise RuntimeError(
+                        f'Cannot save spectrum: {exc}; restoring previous settings '
+                        f'also failed: {rollback_exc}') from exc
+            raise
         temporary = None
         try:
             from .catalog import SpectrumCatalog

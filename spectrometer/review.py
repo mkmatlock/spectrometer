@@ -183,13 +183,24 @@ class ReviewList:
         # overwrite the newly saved name.
         return self._names_executor.submit(rename_capture, path, name)
 
-    def save_scale(self, labels):
-        """Save the completed scale to the displayed capture off the UI thread."""
+    def save_scale(self, labels, *, save_settings=None,
+                   settings_before=None, settings_after=None):
+        """Save the completed scale and its optional settings off the UI thread.
+
+        The callback must atomically persist the supplied settings dictionary.
+        It receives the new snapshot before the capture is published, or the
+        previous snapshot if publishing fails and the settings must be restored.
+        """
         from .capture import update_scale_calibration
         if self.loaded_path is None:
             raise ValueError('No capture is loaded')
+        options = {}
+        if save_settings is not None:
+            options = dict(save_settings=save_settings,
+                           settings_before=deepcopy(settings_before),
+                           settings_after=deepcopy(settings_after))
         return self._names_executor.submit(update_scale_calibration,
-                                           self.loaded_path, deepcopy(labels))
+                                           self.loaded_path, deepcopy(labels), **options)
 
     def save_peak_label(self, pixel, label):
         """Save one review annotation without blocking the display loop."""

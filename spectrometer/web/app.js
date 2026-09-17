@@ -1,10 +1,12 @@
 import {prepareSpectrum, buildDisplay, pixelToWavelength, axisTicks, featureIndices, fitBlackbody} from './spectrum-math.js';
+import {drawPeakLabels, normalizePeakLabels, hitTestPeakLabel} from './annotations.js';
 
 const $ = id => document.getElementById(id);
 const state = {entries: [], selected: null, id: null, prepared: null, display: null,
   channels: ['Red', 'Green', 'Blue'], absorption: false, blackbody: false,
-  fit: null, peak: null, busy: false, activity: 'review', nameAction: null};
+  fit: null, peak: null, labels: {}, busy: false, activity: 'review', nameAction: null};
 let plotBounds = null;
+let labelBoxes = [];
 let resizePending = false;
 
 function status(message = '', error = false) {
@@ -20,6 +22,7 @@ function controls() {
   $('delete').disabled = state.busy || state.id === null;
   document.querySelectorAll('#name-dialog button, #name-input, #delete-dialog button').forEach(el => { el.disabled = state.busy; });
   $('review-view').setAttribute('aria-busy', String(state.busy));
+  $('plot').setAttribute('aria-disabled', String(state.busy || !state.display));
 }
 async function run(action, message, errorTarget = null) {
   if (state.busy) return;
@@ -48,6 +51,7 @@ async function api(path, options = {}) {
 }
 function switchActivity(activity) {
   state.activity = activity;
+  if (activity !== 'review') dismissFeature(false);
   $('review-view').hidden = activity !== 'review';
   $('settings-view').hidden = activity !== 'settings';
   for (const name of ['review', 'settings']) {
@@ -90,6 +94,8 @@ async function fetchList() {
 }
 function clearSpectrum() {
   state.id = null; state.prepared = state.display = state.fit = null; state.peak = null;
+  state.labels = {}; labelBoxes = []; plotBounds = null;
+  dismissFeature(false);
   $('spectrum-view').hidden = true; $('empty-view').hidden = false;
   controls();
 }
@@ -97,6 +103,7 @@ async function loadSpectrum(id) {
   const record = await api(`/spectrum/${id}`);
   const prepared = prepareSpectrum(record);
   state.prepared = prepared; state.id = id; state.selected = id;
+  state.labels = normalizePeakLabels(record.peak_labels, prepared.roi); labelBoxes = [];
   state.channels = ['Red', 'Green', 'Blue']; state.absorption = false; state.blackbody = false;
   state.peak = null; state.fit = null;
   $('record-name').textContent = record.name;
@@ -114,7 +121,7 @@ function formatDate(value) {
 function updateDisplay() {
   if (!state.prepared) return;
   state.display = buildDisplay(state.prepared, state.channels);
-  state.peak = null;
+  dismissFeature(false);
   state.fit = null;
   $('fit-error').hidden = true;
   $('temperature').textContent = '';
@@ -140,8 +147,46 @@ function updateDisplay() {
 }
 function updatePeakLabel() {
   if (state.peak === null || !state.display) { $('peak-label').textContent = ''; return; }
-  const wavelength = pixelToWavelength(state.peak, state.display.scalePoints);
-  $('peak-label').textContent = wavelength === null ? `Pixel ${state.peak}` : `${wavelength.toFixed(1)} nm`;
+  $('peak-label').textContent = peakPosition(state.peak);
+}
+function peakPosition(pixel) {
+  const wavelength = pixelToWavelength(pixel, state.display.scalePoints);
+  return wavelength === null ? `Pixel ${pixel}` : `${wavelength.toFixed(1)} nm`;
+}
+function dismissFeature(redraw = true) {
+  state.peak = null;
+  $('feature-dialog').hidden = true;
+  $('feature-error').textContent = '';
+  updatePeakLabel();
+  if (redraw) draw();
+}
+function showFeature(pixel) {
+  state.peak = pixel;
+  const label = state.labels[pixel];
+  $('feature-title').textContent = (label ? `${label} — ` : '') + peakPosition(pixel);
+  $('feature-action').textContent = label ? 'Delete' : 'Label';
+  $('feature-action').classList.toggle('danger', Boolean(label));
+  $('feature-error').textContent = '';
+  $('feature-dialog').hidden = false;
+  updatePeakLabel(); draw();
+  $('feature-dialog').scrollIntoView({block: 'nearest'});
+}
+async function savePeakLabel(id, pixel, label) {
+  const result = await api(`/spectrum/${id}`, {method: 'PATCH',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({peak_label: {pixel, label}})});
+  if (result?.id !== id || !result.peak_labels || typeof result.peak_labels !== 'object' || Array.isArray(result.peak_labels)) {
+    throw new Error('The device returned an invalid label update. Reopen the spectrum to check the saved labels.');
+  }
+  if (state.id === id) state.labels = normalizePeakLabels(result.peak_labels, state.display.roi);
+}
+function featureAction() {
+  if (state.busy || state.peak === null) return;
+  if (!state.labels[state.peak]) { openName('annotation'); return; }
+  const id = state.id, pixel = state.peak;
+  return run(async () => {
+    await savePeakLabel(id, pixel, null);
+    dismissFeature();
+  }, 'Deleting label…', 'feature-error');
 }
 function canvasContext(canvas) {
   const {width, height} = canvas.getBoundingClientRect();
@@ -211,6 +256,7 @@ function draw() {
     ctx.beginPath(); ctx.arc(xx, yy, 5, 0, 2 * Math.PI); ctx.stroke();
   }
   ctx.restore();
+  labelBoxes = drawPeakLabels(ctx, plotBounds, intensity, roi, state.labels);
   const slice = $('slice'), display = state.display;
   slice.width = display.width; slice.height = display.height;
   const pixels = new Uint8ClampedArray(display.width * display.height * 4);
@@ -221,40 +267,59 @@ function draw() {
   slice.getContext('2d').putImageData(new ImageData(pixels, display.width, display.height), 0, 0);
 }
 function selectFeature(event) {
-  if (!state.display || !plotBounds) return;
+  if (state.busy || !state.display || !plotBounds || $('name-dialog').open || $('delete-dialog').open) return;
   const box = $('plot').getBoundingClientRect();
   const px = event.clientX - box.left, py = event.clientY - box.top;
   const {left, right, top, bottom, x, y} = plotBounds;
   if (px < left || px > right || py < top || py > bottom) return;
+  const label = hitTestPeakLabel(labelBoxes, px, py);
+  if (label) { showFeature(label.pixel); return; }
   const {intensity, roi} = state.display;
   let best = Infinity; state.peak = null;
   for (const i of featureIndices(intensity, state.absorption)) {
     const distance = (px - x(i + roi[0])) ** 2 + (py - y(intensity[i])) ** 2;
     if (distance < best) { best = distance; state.peak = i + roi[0]; }
   }
-  updatePeakLabel();
-  if (state.peak === null) $('peak-label').textContent = state.absorption ? 'No valleys found' : 'No peaks found';
-  draw();
+  if (state.peak !== null) showFeature(state.peak);
+  else {
+    dismissFeature();
+    $('peak-label').textContent = state.absorption ? 'No valleys found' : 'No peaks found';
+  }
 }
 function openName(action) {
   if (state.busy) return;
   const entry = state.entries.find(e => e.id === state.selected);
   if (action === 'rename' && !entry) return;
-  state.nameAction = {action, id: entry?.id};
-  $('name-title').textContent = action === 'rename' ? 'Rename spectrum' : 'Capture spectrum';
-  $('name-help').textContent = action === 'rename' ? 'The recording and its collection date stay the same.' : 'The camera must be running on the device.';
+  if (action === 'annotation' && state.peak === null) return;
+  if (action !== 'annotation') dismissFeature();
+  state.nameAction = {action, id: action === 'annotation' ? state.id : entry?.id, pixel: state.peak};
+  $('name-title').textContent = action === 'annotation' ? `Label ${state.absorption ? 'valley' : 'peak'}` : action === 'rename' ? 'Rename spectrum' : 'Capture spectrum';
+  $('name-label').textContent = action === 'annotation' ? 'Label' : 'Name';
+  $('name-help').textContent = action === 'annotation' ? peakPosition(state.peak) : action === 'rename' ? 'The recording and its collection date stay the same.' : 'The camera must be running on the device.';
   $('name-input').value = action === 'rename' ? entry.name : '';
   $('name-error').textContent = '';
+  $('feature-dialog').hidden = true;
   $('name-dialog').showModal(); $('name-input').focus(); $('name-input').select();
+}
+function cancelName() {
+  if (state.busy) return;
+  $('name-dialog').close();
+  if (state.nameAction?.action === 'annotation') dismissFeature();
+  state.nameAction = null;
 }
 async function submitName(event) {
   event.preventDefault();
+  if (state.busy || !state.nameAction) return;
   const name = $('name-input').value.trim();
-  if (!name || Array.from(name).length > 64) { $('name-error').textContent = 'Enter a name of 1–64 characters.'; return; }
-  const {action, id} = state.nameAction;
+  const {action, id, pixel} = state.nameAction;
+  if (!name || Array.from(name).length > 64) { $('name-error').textContent = `Enter a ${action === 'annotation' ? 'label' : 'name'} of 1–64 characters.`; return; }
   $('name-error').textContent = '';
   await run(async () => {
-    if (action === 'rename') {
+    if (action === 'annotation') {
+      await savePeakLabel(id, pixel, name);
+      $('name-dialog').close(); state.nameAction = null;
+      dismissFeature();
+    } else if (action === 'rename') {
       await api(`/spectrum/${id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})});
       const entry = state.entries.find(e => e.id === id); if (entry) entry.name = name;
       if (state.id === id) $('record-name').textContent = name;
@@ -269,7 +334,7 @@ async function submitName(event) {
       status('Capture saved. Loading spectrum…');
       await loadSpectrum(captured);
     }
-  }, action === 'rename' ? 'Saving name…' : 'Capturing spectrum…', 'name-error');
+  }, action === 'annotation' ? 'Saving label…' : action === 'rename' ? 'Saving name…' : 'Capturing spectrum…', 'name-error');
 }
 function settingsGroup(title, rows) {
   const group = document.createElement('section'); group.className = 'settings-group';
@@ -306,8 +371,14 @@ $('review-nav').onclick = () => { switchActivity('review'); status(); };
 $('settings-nav').onclick = () => run(showSettings, 'Loading settings…');
 $('settings-back').onclick = () => { switchActivity('review'); status(); };
 $('name-form').onsubmit = submitName;
-$('name-cancel').onclick = () => $('name-dialog').close();
-for (const dialog of [$('name-dialog'), $('delete-dialog')]) dialog.addEventListener('cancel', e => { if (state.busy) e.preventDefault(); });
+$('name-cancel').onclick = cancelName;
+$('name-dialog').addEventListener('cancel', event => { event.preventDefault(); cancelName(); });
+$('delete-dialog').addEventListener('cancel', event => { if (state.busy) event.preventDefault(); });
+$('feature-action').onclick = featureAction;
+$('feature-cancel').onclick = () => { if (!state.busy) dismissFeature(); };
+$('feature-dialog').addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !state.busy) { event.preventDefault(); dismissFeature(); $('plot').focus(); }
+});
 document.querySelectorAll('[data-channel]').forEach(button => button.onclick = () => {
   const name = button.dataset.channel;
   const previous = state.channels;
@@ -322,7 +393,7 @@ document.querySelectorAll('[data-channel]').forEach(button => button.onclick = (
 });
 $('emission-toggle').onclick = () => { state.absorption = !state.absorption; updateDisplay(); };
 $('blackbody-toggle').onclick = () => { state.blackbody = !state.blackbody; updateDisplay(); };
-$('delete').onclick = () => { $('delete-name').textContent = $('record-name').textContent; $('delete-error').textContent = ''; $('delete-dialog').showModal(); };
+$('delete').onclick = () => { dismissFeature(); $('delete-name').textContent = $('record-name').textContent; $('delete-error').textContent = ''; $('delete-dialog').showModal(); };
 $('delete-cancel').onclick = () => $('delete-dialog').close();
 $('delete-confirm').onclick = () => run(async () => {
   const id = state.id;
@@ -333,14 +404,16 @@ $('delete-confirm').onclick = () => run(async () => {
 }, 'Deleting spectrum…', 'delete-error');
 $('plot').addEventListener('click', selectFeature);
 $('plot').addEventListener('keydown', event => {
-  if (!state.display || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  if (state.busy || !state.display || $('name-dialog').open || $('delete-dialog').open) return;
+  if (event.key === 'Escape') { event.preventDefault(); dismissFeature(); return; }
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
   event.preventDefault();
   const {intensity, roi} = state.display;
   const features = Array.from(featureIndices(intensity, state.absorption), i => i + roi[0]).reverse();
   if (!features.length) return;
   let index = features.indexOf(state.peak);
   index = index < 0 ? Math.floor(features.length / 2) : Math.max(0, Math.min(features.length - 1, index + (event.key === 'ArrowLeft' ? -1 : 1)));
-  state.peak = features[index]; updatePeakLabel(); draw();
+  showFeature(features[index]);
 });
 new ResizeObserver(() => {
   if (!resizePending) { resizePending = true; requestAnimationFrame(() => { resizePending = false; draw(); }); }

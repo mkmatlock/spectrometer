@@ -59,7 +59,8 @@ class WavelengthTests(unittest.TestCase):
         ui._select_peak(ui._peaks.positions[0])
         self.assertEqual(ui._review_peak_label, '600.0 nm')
         self.assertIsNotNone(ui._peaks.marker)
-        self.assertFalse(ui._peak_dialog)
+        self.assertTrue(ui._peak_dialog)
+        self.assertEqual([b[0] for b in ui.buttons], ['Label', 'Cancel'])
         ui._scale_active = True
         ui._update_plot(frame)
         self.assertIsNone(ui._plot.scale)

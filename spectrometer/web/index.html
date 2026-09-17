@@ -35,7 +35,12 @@
             <canvas id="plot" height="360" tabindex="0" role="img" aria-label="Spectrum intensity graph. Click or touch to select a peak. Use left and right arrows to select a nearby peak."></canvas>
             <div class="slice-wrap"><canvas id="slice" height="38" aria-label="Raw camera spectrum slice"></canvas></div>
             <div class="plot-caption"><span id="axis-label">Pixel</span><span id="channel-label">Red · Green · Blue</span></div>
-            <p class="hint">Touch the curve to mark the nearest <span id="feature-kind">peak</span>.</p>
+            <section id="feature-dialog" class="feature-dialog" role="dialog" aria-modal="false" aria-labelledby="feature-title" hidden>
+              <h3 id="feature-title" aria-live="polite"></h3>
+              <p id="feature-error" class="error" role="alert"></p>
+              <div class="dialog-actions"><button id="feature-action" data-action>Label</button><button id="feature-cancel" data-action>Cancel</button></div>
+            </section>
+            <p class="hint">Touch the curve to label the nearest <span id="feature-kind">peak</span>. Touch a saved label to delete it.</p>
             <div id="spectrum-modes" class="spectrum-modes" role="group" aria-label="Spectrum display modes">
               <div class="mode-options">
                 <button class="mode-toggle red" data-channel="Red" aria-pressed="true" data-action><span>Red</span><span class="toggle-light" aria-hidden="true"></span></button>
@@ -60,7 +65,7 @@
   <dialog id="name-dialog" aria-labelledby="name-title">
     <form id="name-form">
       <p class="eyebrow">SPECTRUM</p><h2 id="name-title">Name spectrum</h2>
-      <label for="name-input">Name</label><input id="name-input" name="name" type="text" maxlength="64" required autocomplete="off">
+      <label id="name-label" for="name-input">Name</label><input id="name-input" name="name" type="text" maxlength="64" required autocomplete="off">
       <p id="name-help" class="secondary"></p>
       <p id="name-error" class="error" role="alert"></p>
       <div class="dialog-actions"><button type="button" id="name-cancel">Cancel</button><button type="submit" class="primary">Accept</button></div>

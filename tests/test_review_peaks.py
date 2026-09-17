@@ -12,7 +12,7 @@ from tests.spectrum_fixtures import spectrum_record
 
 
 class ReviewPeakTests(unittest.TestCase):
-    def test_review_touch_labels_peaks_without_dialog_and_filter_resets(self):
+    def test_review_touch_opens_label_dialog_and_filter_resets(self):
         with tempfile.TemporaryDirectory() as directory:
             values = np.zeros(3500, dtype=np.int32)
             values[900], values[2400] = 50000, 40000
@@ -33,13 +33,16 @@ class ReviewPeakTests(unittest.TestCase):
                     ui._pointer_event('lcd', position, True)
                     ui._pointer_event('lcd', position, False)
                     self.assertEqual(ui._review_peak_label, f'Pixel {pixel}')
-                    self.assertFalse(ui._peak_dialog)
-                    self.assertIs(ui.buttons, buttons)
+                    self.assertTrue(ui._peak_dialog)
+                    self.assertEqual([b[0] for b in ui.buttons], ['Label', 'Cancel'])
+                ui.buttons[-1][2]()
+                self.assertIsNone(ui._peaks.marker)
+                self.assertIs(ui.buttons, buttons)
                 ui._ask_filter()
                 position = tuple(ui._peaks.positions[0])
                 ui._pointer_event('lcd', position, True)
                 ui._pointer_event('lcd', position, False)
-                self.assertEqual(ui._review_peak_label, 'Pixel 2400')
+                self.assertIsNone(ui._review_peak_label)
                 filtered = np.zeros(3500, dtype=np.int32)
                 filtered[1800] = 30000
                 ui._apply_filter(SpectrumFrame(bar, filtered, calibration=DEFAULTS['calibration']))

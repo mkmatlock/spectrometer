@@ -61,6 +61,36 @@ def update_scale_calibration(path, labels):
     return labels
 
 
+def update_peak_label(path, pixel, label):
+    """Atomically add or remove one user annotation, preserving the saved spectrum."""
+    from .review import record_peak_labels, record_roi
+
+    if type(pixel) is not int:
+        raise ValueError('Peak pixel must be an integer')
+    if label is not None:
+        if not isinstance(label, str):
+            raise ValueError('Peak label must be text')
+        label = label.strip()
+        if not 1 <= len(label) <= 64:
+            raise ValueError('Enter a label of 1 to 64 characters')
+    saved_labels = {}
+
+    def update(record):
+        roi = record_roi(record)
+        if not roi[0] <= pixel < roi[2]:
+            raise ValueError('Peak pixel is outside the spectrum')
+        labels = record_peak_labels(record)
+        if label is None:
+            labels.pop(pixel, None)
+        else:
+            labels[pixel] = label
+        record['peak_labels'] = labels
+        saved_labels.update(labels)
+
+    _update_capture(path, update)
+    return deepcopy(saved_labels)
+
+
 def delete_capture(path):
     """Serialize deletion with metadata edits so a pending edit cannot restore a file."""
     with _MUTATION_LOCK:

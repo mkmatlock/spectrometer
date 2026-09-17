@@ -83,6 +83,7 @@ class SpectrumFrame:
     roi: tuple = SPECTRUM_ROI
     calibration: dict = field(default_factory=dict)
     maximum: int = None
+    peak_labels: dict = field(default_factory=dict)
 
 
 class FrameAverager:
@@ -403,6 +404,7 @@ class CameraStream:
                 "spectrum_maximum": frame.maximum,
                 "spectrum_bar": frame.bar,
                 "spectrum_roi": frame.roi,
+                "peak_labels": {},
             }
             with self._lock:
                 api = self._api_capture

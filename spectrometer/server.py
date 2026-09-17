@@ -17,7 +17,7 @@ import threading
 from urllib.parse import urlsplit, parse_qs
 
 from .catalog import DuplicateSpectrumID, SpectrumCatalog, timestamp_id
-from .capture import delete_capture, rename_capture
+from .capture import delete_capture, rename_capture, update_peak_label
 from .settings import network_status
 
 
@@ -28,6 +28,7 @@ STATIC_FILES = {
     '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
     '/style.css': ('style.css', 'text/css; charset=utf-8'),
     '/spectrum-math.js': ('spectrum-math.js', 'text/javascript; charset=utf-8'),
+    '/annotations.js': ('annotations.js', 'text/javascript; charset=utf-8'),
 }
 RESPONSE_CHUNK_SIZE = 64 * 1024
 
@@ -152,7 +153,7 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
 
-    def rename_spectrum(self, spectrum_id):
+    def update_spectrum(self, spectrum_id):
         if self.headers.get_content_type() != 'application/json':
             self._respond({'error': 'Expected application/json'}, 415)
             return
@@ -161,12 +162,25 @@ class APIHandler(BaseHTTPRequestHandler):
             if not 0 < length <= 4096 or self.headers.get('Transfer-Encoding'):
                 raise ValueError('Invalid body length')
             payload = json.loads(self.rfile.read(length))
-            name = payload.get('name') if isinstance(payload, dict) else None
-            if (not isinstance(name, str) or set(payload) != {'name'} or
-                    not 1 <= len(name.strip()) <= 64):
-                raise ValueError('Invalid name')
+            if isinstance(payload, dict) and set(payload) == {'name'}:
+                name = payload['name']
+                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 64:
+                    raise ValueError('Invalid name')
+                operation = 'rename'
+            elif isinstance(payload, dict) and set(payload) == {'peak_label'}:
+                annotation = payload['peak_label']
+                if not isinstance(annotation, dict) or set(annotation) != {'pixel', 'label'}:
+                    raise ValueError('Invalid peak label')
+                pixel, label = annotation['pixel'], annotation['label']
+                if type(pixel) is not int or (label is not None and
+                        (not isinstance(label, str) or not 1 <= len(label.strip()) <= 64)):
+                    raise ValueError('Invalid peak label')
+                operation = 'label'
+            else:
+                raise ValueError('Invalid spectrum update')
         except (ValueError, UnicodeDecodeError, RecursionError):
-            self._respond({'error': 'Provide a JSON object with one name of 1–64 characters'}, 400)
+            self._respond({'error': 'Provide a name of 1–64 characters or a peak_label '
+                           'with an integer pixel and a label of 1–64 characters (null to delete)'}, 400)
             return
         if not self.server.raw_slots.acquire(blocking=False):
             self._respond({'error': 'Another spectrum operation is in progress'}, 503)
@@ -178,15 +192,22 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._respond({'error': 'Spectrum ID is ambiguous'}, 409)
                 return
             except Exception:
-                LOGGER.exception('Cannot find spectrum %s for rename', spectrum_id)
+                LOGGER.exception('Cannot find spectrum %s for %s', spectrum_id, operation)
                 self._respond({'error': 'Cannot read spectrum metadata'}, 500)
                 return
             if path is None:
                 self._respond({'error': 'Spectrum not found'}, 404)
                 return
             try:
-                name = rename_capture(path, name)
-                # Usually a metadata-only check: rename_capture already updates
+                if operation == 'rename':
+                    result = {'name': rename_capture(path, name)}
+                else:
+                    try:
+                        result = {'peak_labels': update_peak_label(path, pixel, label)}
+                    except ValueError as exc:
+                        self._respond({'error': str(exc)}, 400)
+                        return
+                # Usually a metadata-only check: the mutation already updates
                 # SQLite. Also refresh this instance's in-memory fallback index.
                 self.server.catalog.reconcile_paths([path])
             except FileNotFoundError:
@@ -194,10 +215,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._respond({'error': 'Spectrum not found'}, 404)
                 return
             except Exception:
-                LOGGER.exception('Cannot rename spectrum %s', path.name)
-                self._respond({'error': 'Cannot rename spectrum'}, 500)
+                LOGGER.exception('Cannot %s spectrum %s', operation, path.name)
+                self._respond({'error': 'Cannot ' + operation + ' spectrum'}, 500)
                 return
-            self._respond({'id': int(spectrum_id), 'name': name})
+            self._respond({'id': int(spectrum_id), **result})
         finally:
             self.server.raw_slots.release()
 
@@ -282,7 +303,7 @@ class APIHandler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         path = urlsplit(self.path).path
         if match := re.fullmatch(r'/spectrum/([0-9]+)', path):
-            self.rename_spectrum(match.group(1))
+            self.update_spectrum(match.group(1))
         else:
             self._respond({'error': 'Not found'}, 404)
 

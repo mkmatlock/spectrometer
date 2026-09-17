@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from copy import deepcopy
+import numpy as np
 import pygame
 
 from .performance import PerformanceMetrics
@@ -67,6 +68,11 @@ class SpectrometerUI:
         self._peak_touch = None
         self._peaks = None
         self._review_peak_label = None
+        self._review_labels = {}
+        self._annotation_rects = {}
+        self._annotation_touch = None
+        self._annotation_pixel = None
+        self._annotation_future = None
         from .config import DEFAULTS
         self.calibration_settings = (calibration_settings if calibration_settings is not None
                                      else deepcopy(DEFAULTS['calibration']))
@@ -140,13 +146,18 @@ class SpectrometerUI:
                 self.buttons.append((label, pygame.Rect(round(left), 66 + row * 48, width, 44),
                                      lambda value=action: self._capture_key(value)))
                 left += unit * weight + 4
-        self.buttons.extend([('Accept', pygame.Rect(8, 264, 228, 48),
-                              self._accept_rename if self.mode == 'rename' else self._accept_capture),
-                             ('Cancel', pygame.Rect(244, 264, 228, 48),
-                              self._cancel_rename if self.mode == 'rename' else self._cancel_capture)])
+        accept, cancel = {
+            'capture': (self._accept_capture, self._cancel_capture),
+            'rename': (self._accept_rename, self._cancel_rename),
+            'annotation': (self._accept_annotation, self._cancel_annotation),
+        }[self.mode]
+        self.buttons.extend([('Accept', pygame.Rect(8, 264, 228, 48), accept),
+                             ('Cancel', pygame.Rect(244, 264, 228, 48), cancel)])
 
     def _capture_key(self, key):
         if self.mode == "rename" and not self._rename_ready:
+            return
+        if self.mode == 'annotation' and self._annotation_future is not None:
             return
         if key == 'Shift':
             self._capture_upper = not self._capture_upper
@@ -176,6 +187,9 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_capture(self):
+        if self.mode == 'annotation' or (self.mode == 'saved' and self._annotation_future is not None):
+            self._poll_annotation()
+            return
         if self.mode == 'rename':
             self._poll_rename()
             return
@@ -409,6 +423,7 @@ class SpectrometerUI:
             self.camera.request_pause()
 
     def _review_list(self):
+        self._clear_peak_selection()
         self._peak_dialog = False
         self._peak_touch = None
         self.review.cancel_filter()
@@ -504,6 +519,8 @@ class SpectrometerUI:
         self._redraw = True
 
     def _poll_review(self):
+        if self.mode == 'saved' and self._annotation_future is not None:
+            return
         if self.mode == 'saved' and self._scale_save_future is not None:
             if self._scale_save_future.done():
                 future, self._scale_save_future = self._scale_save_future, None
@@ -564,6 +581,8 @@ class SpectrometerUI:
             self._blackbody = False
             self._blackbody_label = None
             self._plot = SpectrumPlot(frame.roi)
+            self._review_labels = deepcopy(frame.peak_labels)
+            self._annotation_rects = {}
             self.mode = "saved"
             self._update_plot(frame)
             self._camera_bar = pygame.transform.flip(pygame.image.frombuffer(frame.bar, BAR_SIZE, "RGB"), True, False)
@@ -695,15 +714,34 @@ class SpectrometerUI:
                                     self._plot.AREA.move(self.spectrum_rect.topleft),
                                     self._plot.maximum, self._plot.roi[0], self._absorption)
         self._review_peak_label = None
+        self._annotation_pixel = self._annotation_touch = None
+        self._annotation_rects = {}
+        if self._peak_dialog and not self._scale_active:
+            self._peak_dialog = False
+            if not self._filter_dialog:
+                self.buttons = self._saved_buttons
         self._spectrum_intensity = intensity
+
+    def _clear_peak_selection(self):
+        if self._peaks is not None:
+            self._peaks.selected = None
+        self._peak_touch = self._annotation_touch = self._annotation_pixel = None
+        self._review_peak_label = None
+
+    def _peak_position_text(self, pixel):
+        if self._plot.scale is not None:
+            return '%.1f nm' % self._plot.scale.wavelength(pixel)
+        return 'Pixel %s' % pixel
 
     def _select_peak(self, position):
         index = self._peaks.select(position)
         self._peak_message = ("No valleys found" if self._absorption else "No peaks found") if index is None else "Pixel %s" % (index)
         if not self._scale_active:
-            if index is not None and self._plot.scale is not None:
-                self._peak_message = '%.1f nm' % (self._plot.scale.wavelength(index))
-            self._review_peak_label = self._peak_message
+            if index is None:
+                self._cancel_review_peak()
+                self._review_peak_label = self._peak_message
+            else:
+                self._select_annotation(index)
             self._redraw = True
             return
         self._peak_dialog = True
@@ -714,6 +752,103 @@ class SpectrometerUI:
         else:
             self.buttons = [("Label", pygame.Rect(64, 248, 172, 48), self._label_peak),
                             ("Back", pygame.Rect(244, 248, 172, 48), self._back_peak)]
+        self._redraw = True
+
+    def _select_annotation(self, pixel):
+        self._annotation_pixel = pixel
+        # A label remains selectable when channel or emission/absorption changes
+        # mean its saved pixel is no longer one of the currently detected extrema.
+        matches = np.flatnonzero(self._peaks.indices == pixel)
+        self._peaks.selected = int(matches[0]) if len(matches) else None
+        self._review_peak_label = self._peak_position_text(pixel)
+        label = self._review_labels.get(pixel)
+        self._peak_message = (label + ' — ' if label else '') + self._review_peak_label
+        self._peak_dialog = True
+        self._review_peak_buttons()
+        self._redraw = True
+
+    def _review_peak_buttons(self):
+        labeled = self._annotation_pixel in self._review_labels
+        self.buttons = [
+            ('Delete' if labeled else 'Label', pygame.Rect(64, 248, 172, 48),
+             self._delete_annotation if labeled else self._label_annotation),
+            ('Cancel', pygame.Rect(244, 248, 172, 48), self._cancel_review_peak),
+        ]
+
+    def _cancel_review_peak(self):
+        self._peak_dialog = False
+        self._clear_peak_selection()
+        self.buttons = self._saved_buttons
+        self._redraw = True
+
+    def _label_annotation(self):
+        if self._annotation_pixel is None or self._annotation_future is not None:
+            return
+        self.mode = 'annotation'
+        self._capture_name = self._review_labels.get(self._annotation_pixel, '')
+        self._capture_message = 'Label ' + self._peak_position_text(self._annotation_pixel)
+        self._capture_upper = False
+        self._capture_keyboard()
+        self._redraw = True
+
+    def _accept_annotation(self):
+        if self._annotation_future is not None:
+            return
+        if not self._capture_name.strip():
+            self._capture_message = 'Enter a label'
+        else:
+            try:
+                self._annotation_future = self.review.save_peak_label(
+                    self._annotation_pixel, self._capture_name.strip())
+            except Exception:
+                LOGGER.exception('Could not start saving spectrum label')
+                self._capture_message = 'Save failed. Retry or cancel.'
+            else:
+                self._capture_message = 'Saving label...'
+                self.buttons = []
+        self._redraw = True
+
+    def _cancel_annotation(self):
+        if self._annotation_future is not None:
+            return
+        self.mode = 'saved'
+        self._cancel_review_peak()
+
+    def _delete_annotation(self):
+        if self._annotation_future is not None or self._annotation_pixel is None:
+            return
+        try:
+            self._annotation_future = self.review.save_peak_label(self._annotation_pixel, None)
+        except Exception:
+            LOGGER.exception('Could not start deleting spectrum label')
+            self._peak_message = 'Delete failed. Retry or cancel.'
+        else:
+            self._peak_message = 'Deleting label...'
+            self.buttons = []
+        self._redraw = True
+
+    def _poll_annotation(self):
+        if self._annotation_future is None or not self._annotation_future.done():
+            return
+        future, self._annotation_future = self._annotation_future, None
+        try:
+            labels = future.result()
+        except Exception:
+            LOGGER.exception('Could not update spectrum label')
+            if self.mode == 'annotation':
+                self._capture_message = 'Save failed. Retry or cancel.'
+                self._capture_keyboard()
+            else:
+                self._peak_message = 'Delete failed. Retry or cancel.'
+                self._review_peak_buttons()
+        else:
+            self._review_labels = deepcopy(labels)
+            for frame in self.review._channel_cache.values():
+                frame.peak_labels.clear()
+                frame.peak_labels.update(labels)
+            self._annotation_rects = {}
+            self.mode = 'saved'
+            self._cancel_review_peak()
         self._redraw = True
 
     def _delete_peak_label(self):
@@ -832,7 +967,7 @@ class SpectrometerUI:
 
     def _back_peak(self):
         self._peak_dialog = False
-        self._peaks.selected = None
+        self._clear_peak_selection()
         self.buttons = self._saved_buttons
         self._redraw = True
 
@@ -969,10 +1104,11 @@ class SpectrometerUI:
 
     def _pointer_event(self, pointer, position, down):
         """Shared button handling for desktop events and polled hardware touch."""
-        if self.mode == 'saved' and self._scale_save_future is not None:
+        if ((self.mode == 'saved' and self._scale_save_future is not None)
+                or (self.mode in ('saved', 'annotation') and self._annotation_future is not None)):
             self._pointer = self._pressed = None
             return
-        if self.mode in ('shutdown', 'capture', 'rename') or (self.mode == 'saved' and self._scale_save_message):
+        if self.mode in ('shutdown', 'capture', 'rename', 'annotation') or (self.mode == 'saved' and self._scale_save_message):
             if down and self._pointer is None:
                 self._pointer = pointer
                 self._pressed = self._button_at(position)
@@ -1002,9 +1138,13 @@ class SpectrometerUI:
                     and self._sensor.rect.collidepoint(position)):
                 self._sensor.start = self._sensor.point(position)
             if (self.mode == "saved" and self._peaks is not None
-                    and not (self._peak_dialog or self._filter_dialog or self._delete_dialog)
+                    and not (self._keypad_open or self._filter_dialog or self._delete_dialog)
                     and self._plot.AREA.move(self.spectrum_rect.topleft).collidepoint(position)):
-                self._peak_touch = position
+                self._annotation_touch = (next((pixel for pixel, rect in reversed(self._annotation_rects.items())
+                                                if rect.collidepoint(position)), None)
+                                          if not self._scale_active else None)
+                if self._annotation_touch is None:
+                    self._peak_touch = position
             if self._calibration_dialog:
                 self._calibration_pressed = next((i for i, (_, rect) in enumerate(self._calibration_rows)
                                                  if rect.collidepoint(position)), None)
@@ -1045,6 +1185,13 @@ class SpectrometerUI:
                 self._pointer = self._pressed = None
                 self._redraw = True
                 return
+            if self._annotation_touch is not None:
+                pixel, self._annotation_touch = self._annotation_touch, None
+                self._pointer = self._pressed = None
+                rect = self._annotation_rects.get(pixel)
+                if rect is not None and rect.collidepoint(position):
+                    self._select_annotation(pixel)
+                return
             if self._peak_touch is not None:
                 self._peak_touch = None
                 self._pointer = self._pressed = None
@@ -1079,7 +1226,7 @@ class SpectrometerUI:
     def draw(self, surface, font):
         """Draw cached spectrum axes, trace, camera slice, and touch controls."""
         surface.fill(BACKGROUND)
-        if self.mode in ("capture", "rename"):
+        if self.mode in ("capture", "rename", "annotation"):
             text = font.render(self._capture_message, True, TEXT)
             surface.blit(text, (10, 5))
             pygame.draw.rect(surface, PANEL, (8, 28, 464, 30))
@@ -1156,17 +1303,26 @@ class SpectrometerUI:
             if self._scale_active:
                 self._draw_peak_labels(surface)
             marker = self._peaks.marker if self._peaks is not None else None
+            if not self._scale_active and self._annotation_pixel is not None:
+                area = self._plot.AREA.move(self.spectrum_rect.topleft)
+                offset = self._annotation_pixel - self._plot.roi[0]
+                x = area.right - 1 - round(offset * (area.width - 1) / (len(self._spectrum_intensity) - 1))
+                y = area.bottom - 1 - round(np.clip(self._spectrum_intensity[offset], 0, self._plot.maximum)
+                                           * (area.height - 1) / self._plot.maximum)
+                marker = (x, y)
             if marker is not None:
                 area = self._plot.AREA.move(self.spectrum_rect.topleft)
                 pygame.draw.line(surface, "#ffd166", (marker[0], area.top),
                                  (marker[0], area.bottom - 1))
                 pygame.draw.circle(surface, "#ffd166", marker, 5, 2)
+            if not self._scale_active:
+                self._draw_review_labels(surface)
             if self._peak_dialog and not self._keypad_open:
                 # Keep the plot and selected peak unobscured above the dialog.
                 pygame.draw.rect(surface, PANEL, (48, 200, 384, 112), border_radius=8)
                 pygame.draw.rect(surface, BORDER, (48, 200, 384, 112), 1, border_radius=8)
                 small = self._font(20)
-                text = small.render(self._peak_message, True, TEXT)
+                text = self._fit_text(small, self._peak_message, 348)
                 surface.blit(text, text.get_rect(center=(240, 224)))
             if self._scale_save_message:
                 rect = pygame.Rect(48, 176, 384, 32)
@@ -1255,6 +1411,12 @@ class SpectrometerUI:
             pygame.draw.circle(surface, "#ffd166", (x, y), 4, 1)
             pygame.draw.rect(surface, PANEL, rect)
             surface.blit(text, rect)
+
+    def _draw_review_labels(self, surface):
+        from .annotations import draw_peak_labels
+        self._annotation_rects = draw_peak_labels(
+            surface, self._font(18), self._plot.AREA.move(self.spectrum_rect.topleft),
+            self._spectrum_intensity, self._plot.maximum, self._plot.roi[0], self._review_labels)
 
     def _draw_calibration_dialog(self, surface, font):
         for label, rect, _ in self._settings_buttons:
@@ -1443,7 +1605,7 @@ class SpectrometerUI:
                             active = True if power == 'hold' else not active
                             self._pointer = self._pressed = None
                             self._list_start = None
-                            self._peak_touch = None
+                            self._peak_touch = self._annotation_touch = None
                             if self._sensor is not None:
                                 self._sensor.start = None
                             if self._channel is not None:
@@ -1524,7 +1686,7 @@ class SpectrometerUI:
                 event = pygame.event.wait(20) if (self.camera is not None or self.review.future is not None
                                                 or self.settings_view.future is not None
                                                 or self.review.filter_future is not None
-                                                or self.mode in ("review", "saved", "sensor", "channel", "rename")) else pygame.event.wait()
+                                                or self.mode in ("review", "saved", "sensor", "channel", "rename", "annotation")) else pygame.event.wait()
                 if event.type == pygame.QUIT or (
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
                 ):
@@ -1533,6 +1695,7 @@ class SpectrometerUI:
                 self._handle_pointer(event)
                 if event.type == pygame.WINDOWFOCUSLOST:
                     self._pointer = self._pressed = None
+                    self._peak_touch = self._annotation_touch = None
                     if self._sensor is not None:
                         self._sensor.start = None
                     if self._channel is not None:

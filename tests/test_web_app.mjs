@@ -15,9 +15,11 @@ class Element {
       if (enabled) names.add(name); else names.delete(name);
       this.className = [...names].join(' '); return enabled;
     }, contains: name => this.className.split(' ').includes(name)};
-    this.context = new Proxy({arcs: [], image: null,
+    this.context = new Proxy({arcs: [], texts: [], image: null,
       measureText: text => ({width: String(text).length * 7}),
       arc: (...args) => this.context.arcs.push(args),
+      fillText: (text, x, y) => this.context.texts.push({text: String(text), x, y}),
+      clearRect: () => { this.context.arcs = []; this.context.texts = []; },
       putImageData: image => { this.context.image = image; },
     }, {get: (target, name) => target[name] ?? (() => {})});
   }
@@ -42,6 +44,7 @@ class Element {
     const event = {preventDefault() { this.defaultPrevented = true; }, ...detail};
     const handlers = [this['on' + type], ...(this.listeners.get(type) || [])].filter(Boolean);
     await Promise.all(handlers.map(handler => handler(event)));
+    if (type === 'cancel' && !event.defaultPrevented) this.close();
     return event;
   }
   showModal() { this.open = true; }
@@ -93,7 +96,7 @@ function spectrum(name = 'Lamp', calibrated = true) {
   const values = [1, 8, 2, 4, 10, 3, 1, 9, 2];
   const pixels = [...values, ...values].flatMap(v => [v, v * 2, v * 3]);
   return {
-    name, timestamp: '2026-09-16T12:00:00+00:00', spectrum_roi: [0, 0, 9, 2],
+    name, timestamp: '2026-09-16T12:00:00+00:00', spectrum_roi: [0, 0, 9, 2], peak_labels: {},
     spectrum_intensity: values.map(v => v * 12),
     spectrum_maximum: 2 * 255 * 3,
     spectrum_bar: {encoding: 'base64', data: Buffer.from(new Uint8Array(462 * 38 * 3).fill(11)).toString('base64')},
@@ -136,8 +139,15 @@ async function launch() {
     const match = /^\/spectrum\/(\d+)$/.exec(path), id = Number(match?.[1]);
     if (!records.has(id)) return response(404, {error: 'Spectrum not found'});
     if (method === 'PATCH') {
-      const {name} = JSON.parse(options.body); records.get(id).name = name;
-      return response(200, {id, name});
+      const update = JSON.parse(options.body);
+      if ('peak_label' in update) {
+        const {pixel, label} = update.peak_label;
+        const labels = records.get(id).peak_labels;
+        if (label === null) delete labels[pixel]; else labels[pixel] = label;
+        return response(200, {id, peak_labels: labels});
+      }
+      records.get(id).name = update.name;
+      return response(200, {id, name: update.name});
     }
     if (method === 'DELETE') { records.delete(id); return response(204, null); }
     return response(200, records.get(id));
@@ -149,9 +159,8 @@ async function launch() {
     ResizeObserver: class { observe() {} },
     ImageData: class { constructor(data, width, height) { Object.assign(this, {data, width, height}); } },
   });
-  const mathURL = new URL('../spectrometer/web/spectrum-math.js', import.meta.url).href;
   const source = (await readFile(new URL('../spectrometer/web/app.js', import.meta.url), 'utf8'))
-    .replace("'./spectrum-math.js'", JSON.stringify(mathURL));
+    .replace(/'\.\/([\w-]+\.js)'/g, (_, module) => JSON.stringify(new URL(`../spectrometer/web/${module}`, import.meta.url).href));
   await import(`data:text/javascript;base64,${Buffer.from(source + `\n//# sourceURL=app-controller-${++instance}.js`).toString('base64')}`);
   for (let i = 0; i < 20 && dom.ids.get('review-view').getAttribute('aria-busy') === 'true'; i++) {
     await new Promise(resolve => setImmediate(resolve));
@@ -310,4 +319,215 @@ test('a saved capture remains listed when viewing fails and cannot be accidental
   await app.click('display');
   assert.equal($('record-name').textContent, 'Saved lamp');
   assert.equal(calls.filter(call => call.path.startsWith('/capture')).length, 1);
+});
+
+async function openNewest(app) {
+  await app.select(0);
+  await app.click('display');
+}
+async function selectMiddlePeak(app) {
+  await app.$('plot').dispatch('click', {clientX: 240, clientY: 304});
+}
+function labelOnCanvas(app, label) {
+  const text = app.$('plot').context.texts.find(entry => entry.text === label);
+  assert.ok(text, `saved label ${label} is drawn`);
+  return text;
+}
+async function clickLabel(app, label) {
+  const {x, y} = labelOnCanvas(app, label);
+  await app.$('plot').dispatch('click', {clientX: x + 2, clientY: y});
+}
+
+test('review label dialog retargets peaks and keyboard arrows; Cancel and Back clear the marker', async () => {
+  const app = await launch(), {$, calls} = app;
+  await openNewest(app);
+  await selectMiddlePeak(app);
+  assert.equal($('feature-dialog').hidden, false);
+  assert.equal($('feature-action').textContent, 'Label');
+  assert.match($('feature-title').textContent, /600\.0 nm/);
+  assert.ok($('plot').context.arcs.length, 'selected feature has a marker');
+  await $('plot').dispatch('click', {clientX: 78, clientY: 307});
+  assert.equal($('feature-dialog').hidden, false);
+  assert.match($('feature-title').textContent, /450\.0 nm/);
+  assert.equal($('peak-label').textContent, '450.0 nm');
+  await $('plot').dispatch('keydown', {key: 'ArrowRight'});
+  assert.match($('feature-title').textContent, /600\.0 nm/);
+  await app.click('feature-cancel');
+  assert.equal($('feature-dialog').hidden, true);
+  assert.equal($('peak-label').textContent, '');
+  assert.equal($('plot').context.arcs.length, 0);
+  await selectMiddlePeak(app);
+  await $('feature-dialog').dispatch('keydown', {key: 'Escape'});
+  assert.equal($('feature-dialog').hidden, true);
+  assert.equal($('peak-label').textContent, '');
+  await selectMiddlePeak(app);
+  await app.click('back');
+  assert.equal($('feature-dialog').hidden, true);
+  assert.equal($('peak-label').textContent, '');
+  await app.click('display');
+  assert.equal($('feature-dialog').hidden, true);
+  assert.equal($('plot').context.arcs.length, 0);
+  assert.ok(calls.every(call => call.method === 'GET'), 'selection and cancellation never save');
+});
+
+test('review label entry saves the sensor pixel and text, redraws labels across modes, and reloads saved labels', async () => {
+  const app = await launch(), {$, records, calls} = app;
+  const before = structuredClone(records.get(2000));
+  await openNewest(app);
+  await selectMiddlePeak(app);
+  await app.click('feature-action');
+  assert.equal($('name-dialog').open, true);
+  assert.match($('name-title').textContent, /label/i);
+  assert.equal($('name-label').textContent, 'Label');
+  assert.equal($('name-input').value, '');
+  await app.submit('  Hydrogen α  ');
+  assert.equal($('name-dialog').open, false);
+  assert.equal($('feature-dialog').hidden, true);
+  assert.equal($('peak-label').textContent, '');
+  assert.deepEqual(calls.at(-1), {method: 'PATCH', path: '/spectrum/2000',
+    body: JSON.stringify({peak_label: {pixel: 4, label: 'Hydrogen α'}})});
+  assert.deepEqual(records.get(2000), {...before, peak_labels: {4: 'Hydrogen α'}});
+  labelOnCanvas(app, 'Hydrogen α');
+  await app.dom.querySelectorAll('[data-channel]')[0].dispatch('click');
+  labelOnCanvas(app, 'Hydrogen α');
+  await app.click('emission-toggle');
+  labelOnCanvas(app, 'Hydrogen α');
+  await app.click('back');
+  await app.click('display');
+  labelOnCanvas(app, 'Hydrogen α');
+  assert.equal($('feature-dialog').hidden, true);
+  assert.equal($('record-name').textContent, 'New lamp');
+});
+
+test('valley labels remain selectable for deletion when displayed in emission mode', async () => {
+  const app = await launch(), {$, records, calls} = app;
+  await openNewest(app);
+  await app.click('emission-toggle');
+  await $('plot').dispatch('click', {clientX: 132, clientY: 323});
+  assert.match($('feature-title').textContent, /500\.0 nm/);
+  await app.click('feature-action');
+  await app.submit('Absorption line');
+  assert.deepEqual(records.get(2000).peak_labels, {6: 'Absorption line'});
+  await app.click('emission-toggle');
+  for (const button of app.dom.querySelectorAll('[data-channel]')) await button.dispatch('click');
+  assert.equal($('channel-label').textContent, 'All channels off');
+  await clickLabel(app, 'Absorption line');
+  assert.equal($('feature-action').textContent, 'Delete');
+  assert.match($('feature-title').textContent, /Absorption line/);
+  assert.equal($('peak-label').textContent, '500.0 nm');
+  const requestCount = calls.length;
+  await app.click('feature-cancel');
+  assert.equal(calls.length, requestCount);
+  assert.deepEqual(records.get(2000).peak_labels, {6: 'Absorption line'});
+  await clickLabel(app, 'Absorption line');
+  await app.click('feature-action');
+  assert.deepEqual(calls.at(-1), {method: 'PATCH', path: '/spectrum/2000',
+    body: JSON.stringify({peak_label: {pixel: 6, label: null}})});
+  assert.deepEqual(records.get(2000).peak_labels, {});
+  assert.equal($('feature-dialog').hidden, true);
+  assert.equal($('peak-label').textContent, '');
+  assert.ok(!$('plot').context.texts.some(entry => entry.text === 'Absorption line'));
+  assert.equal($('spectrum-view').hidden, false, 'deleting a label preserves the spectrum');
+  assert.ok(calls.every(call => call.method !== 'DELETE'));
+});
+
+test('annotation keyboard cancellation and Escape discard text and clear the marker without saving', async () => {
+  const app = await launch(), {$, calls} = app;
+  await openNewest(app);
+  for (const cancel of [() => app.click('name-cancel'), () => $('name-dialog').dispatch('cancel')]) {
+    await selectMiddlePeak(app);
+    await app.click('feature-action');
+    $('name-input').value = 'Unsaved line';
+    await cancel();
+    assert.equal($('name-dialog').open, false);
+    assert.equal($('feature-dialog').hidden, true);
+    assert.equal($('peak-label').textContent, '');
+    assert.equal($('plot').context.arcs.length, 0);
+  }
+  assert.ok(calls.every(call => call.method === 'GET'));
+  await app.click('rename');
+  assert.equal($('name-label').textContent, 'Name');
+  assert.equal($('name-input').value, 'New lamp');
+});
+
+test('failed label saves preserve text and existing labels, validate input, and allow retry', async () => {
+  const app = await launch(), {$, records, calls, overrides} = app;
+  records.get(2000).peak_labels = {1: 'Existing label'};
+  await openNewest(app);
+  await selectMiddlePeak(app);
+  await app.click('feature-action');
+  const initialCount = calls.length;
+  await app.submit('   ');
+  await app.submit('x'.repeat(65));
+  assert.equal(calls.length, initialCount);
+  assert.match($('name-error').textContent, /1–64/);
+  overrides.set('PATCH /spectrum/2000', response(500, {error: 'Cannot save spectrum label'}));
+  await app.submit('Retry label');
+  assert.equal($('name-dialog').open, true);
+  assert.equal($('name-input').value, 'Retry label');
+  assert.equal($('name-input').disabled, false);
+  assert.match($('name-error').textContent, /Cannot save spectrum label/);
+  assert.deepEqual(records.get(2000).peak_labels, {1: 'Existing label'});
+  labelOnCanvas(app, 'Existing label');
+  assert.ok(!$('plot').context.texts.some(entry => entry.text === 'Retry label'));
+  overrides.delete('PATCH /spectrum/2000');
+  await app.submit('Retry label');
+  assert.deepEqual(records.get(2000).peak_labels, {1: 'Existing label', 4: 'Retry label'});
+  labelOnCanvas(app, 'Existing label');
+  labelOnCanvas(app, 'Retry label');
+});
+
+test('pending annotation saves block duplicate submissions, retargeting, mode changes, and cancellation', async () => {
+  const app = await launch(), {$, calls, overrides} = app;
+  await openNewest(app);
+  await selectMiddlePeak(app);
+  await app.click('feature-action');
+  let complete;
+  overrides.set('PATCH /spectrum/2000', () => new Promise(resolve => { complete = resolve; }));
+  const pending = app.submit('Pending label');
+  assert.equal($('review-view').getAttribute('aria-busy'), 'true');
+  assert.equal($('name-input').disabled, true);
+  assert.equal($('name-cancel').disabled, true);
+  const requests = calls.length;
+  await app.submit('Pending label');
+  await $('plot').dispatch('click', {clientX: 78, clientY: 307});
+  await $('plot').dispatch('keydown', {key: 'ArrowRight'});
+  await app.click('emission-toggle');
+  await app.click('back');
+  await app.click('name-cancel');
+  const escape = await $('name-dialog').dispatch('cancel');
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal($('name-dialog').open, true);
+  assert.equal($('peak-label').textContent, '600.0 nm');
+  assert.equal($('mode-label').textContent, 'Emission');
+  assert.equal(calls.length, requests);
+  complete(response(200, {id: 2000, peak_labels: {4: 'Pending label'}}));
+  await pending;
+  assert.equal($('review-view').getAttribute('aria-busy'), 'false');
+  assert.equal($('name-dialog').open, false);
+  labelOnCanvas(app, 'Pending label');
+});
+
+test('failed label deletion preserves annotations and offers retry; retargeting resets deletion errors', async () => {
+  const app = await launch(), {$, records, overrides, calls} = app;
+  records.get(2000).peak_labels = {1: 'First line', 4: 'Middle line'};
+  await openNewest(app);
+  await clickLabel(app, 'Middle line');
+  overrides.set('PATCH /spectrum/2000', response(500, {error: 'Cannot delete spectrum label'}));
+  await app.click('feature-action');
+  assert.equal($('feature-dialog').hidden, false);
+  assert.equal($('feature-action').textContent, 'Delete');
+  assert.equal($('feature-action').disabled, false);
+  assert.match($('feature-error').textContent, /Cannot delete spectrum label/);
+  labelOnCanvas(app, 'Middle line');
+  assert.deepEqual(records.get(2000).peak_labels, {1: 'First line', 4: 'Middle line'});
+  await $('plot').dispatch('click', {clientX: 78, clientY: 307});
+  assert.equal($('feature-action').textContent, 'Label');
+  assert.equal($('feature-error').textContent, '');
+  await clickLabel(app, 'Middle line');
+  overrides.delete('PATCH /spectrum/2000');
+  await app.click('feature-action');
+  assert.deepEqual(records.get(2000).peak_labels, {1: 'First line'});
+  labelOnCanvas(app, 'First line');
+  assert.deepEqual(JSON.parse(calls.at(-1).body), {peak_label: {pixel: 4, label: null}});
 });

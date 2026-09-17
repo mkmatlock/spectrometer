@@ -27,6 +27,20 @@ def record_roi(record):
     return roi
 
 
+def record_peak_labels(record):
+    """Validate optional user annotations in absolute sensor-pixel coordinates."""
+    labels = record.get('peak_labels', {})
+    roi = record_roi(record)
+    if not isinstance(labels, dict):
+        raise ValueError('Invalid peak labels')
+    for pixel, label in labels.items():
+        if (type(pixel) is not int or not roi[0] <= pixel < roi[2]
+                or not isinstance(label, str) or not 1 <= len(label) <= 64
+                or not label.strip()):
+            raise ValueError('Invalid peak label')
+    return deepcopy(labels)
+
+
 def load_spectrum(path):
     # These are the application's own local pickle files.
     with Path(path).open('rb') as source:
@@ -43,7 +57,8 @@ def load_spectrum(path):
     if (not isinstance(maximum, (int, float)) or isinstance(maximum, bool)
             or not np.isfinite(maximum) or maximum <= 0):
         raise ValueError('Invalid spectrum maximum')
-    return SpectrumFrame(bar, intensity.copy(), roi, record_calibration(record), maximum)
+    return SpectrumFrame(bar, intensity.copy(), roi, record_calibration(record), maximum,
+                         record_peak_labels(record))
 
 
 def raw_rgb(record):
@@ -69,6 +84,7 @@ def load_channels(path):
     roi = record_roi(record)
     rgb = raw_rgb(record)
     preview = cv2.resize(rgb, BAR_SIZE, interpolation=cv2.INTER_AREA)
+    labels = record_peak_labels(record)
     result = {}
     for index, channel in enumerate(('Red', 'Green', 'Blue')):
         totals = cv2.reduce(np.ascontiguousarray(rgb[:, :, index]), 0,
@@ -76,7 +92,8 @@ def load_channels(path):
         bar = np.zeros_like(preview)
         bar[:, :, index] = preview[:, :, index]
         result[channel] = SpectrumFrame(bar.tobytes(), totals, roi,
-                                        record_calibration(record), (roi[3] - roi[1]) * 255)
+                                        record_calibration(record), (roi[3] - roi[1]) * 255,
+                                        deepcopy(labels))
     return result
 
 
@@ -174,6 +191,13 @@ class ReviewList:
         return self._names_executor.submit(update_scale_calibration,
                                            self.loaded_path, deepcopy(labels))
 
+    def save_peak_label(self, pixel, label):
+        """Save one review annotation without blocking the display loop."""
+        from .capture import update_peak_label
+        if self.loaded_path is None:
+            raise ValueError('No capture is loaded')
+        return self._names_executor.submit(update_peak_label, self.loaded_path, pixel, label)
+
     def read_name(self, path):
         def read():
             from .catalog import display_name
@@ -253,7 +277,8 @@ class ReviewList:
             return original
         if not channels:
             return SpectrumFrame(bytes(len(original.bar)), np.zeros_like(original.intensity),
-                                 original.roi, original.calibration, original.maximum)
+                                 original.roi, original.calibration, original.maximum,
+                                 original.peak_labels)
         frames = [self._channel_cache[name] for name in channels]
         # Match live processing by summing every enabled channel. Preview bytes
         # occupy disjoint RGB components, so their sum cannot overflow uint8.
@@ -261,7 +286,8 @@ class ReviewList:
                      start=np.zeros_like(original.intensity))
         bar = sum(np.frombuffer(frame.bar, np.uint8) for frame in frames).tobytes()
         maximum = (original.roi[3] - original.roi[1]) * 255 * len(frames)
-        return SpectrumFrame(bar, totals, original.roi, original.calibration, maximum)
+        return SpectrumFrame(bar, totals, original.roi, original.calibration, maximum,
+                             original.peak_labels)
 
     def request_channels(self, channels):
         if len(set(channels)) != len(channels) or any(name not in ('Red', 'Green', 'Blue') for name in channels):

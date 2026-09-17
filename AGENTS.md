@@ -1,1 +1,11 @@
-When updating the README after code changes, only include critical information necessary to execute the program or any information required for working with debuging modes. If there is information you require for immediate debugging and feedback, place it in the chat rather than in a README. Do not generate verbose instructions in the README. For example, specific information about hardware construction (such as how to connect LEDs with a resistor) is not needed. Likewise, information about what occurs in the RPI hardware or OS to enable these features is not needed in the README. After you make changes to the application, automatically run the ./upload.sh script to send the changes to the RPI spectrometer for testing, then login to the RPI over SSH and run `sudo systemctl restart spectrometer`. The sudo password and SSH parameters are stored in the `.env` file. 
+# Documentation
+
+When updating the README after code changes, only include critical information necessary to execute the program or any information required for working with debuging modes. If there is information you require for immediate debugging and feedback, place it in the chat rather than in a README. Do not generate verbose instructions in the README. For example, specific information about hardware construction (such as how to connect LEDs with a resistor) is not needed. Likewise, information about what occurs in the RPI hardware or OS to enable these features is not needed in the README. 
+
+# Deployment
+
+After you make changes to the application, automatically run the ./upload.sh script to send the changes to the RPI spectrometer for testing, then login to the RPI over SSH and run `sudo systemctl restart spectrometer`. The sudo password and SSH parameters are stored in the `.env` file. 
+
+# Web Interface
+
+The web interface should maintain feature parity with the touch interface running on the raspberry pi. If a feature is added to the spectrometer touch interface, it should be made available in the web interface. Some advanced or computationally expensive features may be implemented only in the web interface when instructed.

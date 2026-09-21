@@ -329,7 +329,8 @@ function settingsGroup(title, rows) {
   const list = document.createElement('dl');
   for (const [label, value] of rows) {
     const row = document.createElement('div'), dt = document.createElement('dt'), dd = document.createElement('dd');
-    dt.textContent = label; dd.textContent = value; row.append(dt, dd); list.append(row);
+    dt.textContent = label; dd.textContent = value;
+    if (label === 'Frame rate' && value.endsWith(' spf')) dd.classList.add('spf'); row.append(dt, dd); list.append(row);
   } group.append(list); return group;
 }
 async function showSettings() {
@@ -337,9 +338,9 @@ async function showSettings() {
   const camera = settings.camera || {}, calibration = settings.calibration || {}, network = settings.network || {};
   const content = $('settings-content'); content.replaceChildren();
   content.append(settingsGroup('Camera', [
-    ['Frame rate', camera.frame_rate == null ? 'Unavailable' : `${camera.frame_rate} fps`],
+    ['Frame rate', camera.frame_rate == null ? 'Unavailable' : camera.frame_rate < 1 ? `${Number((1 / camera.frame_rate).toPrecision(6))} spf` : `${camera.frame_rate} fps`],
     ['Resolution', camera.resolution?.join(' × ') || 'Unavailable'],
-    ['Exposure time', camera.exposure_us == null ? 'Automatic' : `${camera.exposure_us / 1000} ms`],
+    ['Exposure time', camera.exposure_us === 'min' ? 'Min' : camera.exposure_us === 'max' ? 'Max' : camera.exposure_us == null ? 'Automatic' : `${camera.exposure_us / 1000} ms`],
     ['Frame averaging', camera.frame_averaging == null ? 'Unavailable' : `${camera.frame_averaging} frames`],
   ]));
   content.append(settingsGroup('Network', [['IP address', network.ip_address || 'Unavailable'], ['Wi-Fi network', network.wifi_ssid || 'Unavailable']]));

@@ -26,7 +26,7 @@ PACKED_12_FORMATS = {"S%s12_CSI2P" % order for order in
 @dataclass(frozen=True)
 class CameraSettings:
     frame_rate: float = 5.0
-    exposure_us: int = None  # None keeps automatic exposure enabled.
+    exposure_us: int | str | None = None  # min/max track the supported bounds.
     resolution: tuple = SENSOR_SIZE
     roi: tuple = SPECTRUM_ROI
     frame_averaging: int = 3
@@ -34,7 +34,8 @@ class CameraSettings:
     def __post_init__(self):
         if not math.isfinite(self.frame_rate) or self.frame_rate <= 0:
             raise ValueError("Frame rate must be positive and finite")
-        if self.exposure_us is not None and self.exposure_us <= 0:
+        if self.exposure_us not in (None, 'min', 'max') and (
+                type(self.exposure_us) is not int or self.exposure_us <= 0):
             raise ValueError("Exposure must be a positive number of microseconds")
         if type(self.frame_averaging) is not int or not 1 <= self.frame_averaging <= 10:
             raise ValueError("Frame averaging must be an integer from 1 to 10")
@@ -190,6 +191,7 @@ class CameraStream:
         self._processing_workspace = {}
         self._averager = FrameAverager(self.settings.frame_averaging)
         self._frame_duration_us = None
+        self._exposure_bounds = {}
         self._exposure_us = self.settings.exposure_us
         self._capture_directory = Path.home() if capture_directory is None else Path(capture_directory)
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spectrum-save")
@@ -227,16 +229,26 @@ class CameraStream:
         # probes/reconfigures every mode and is expensive on the Pi Zero.
         minimum, maximum, _ = self._camera.camera_controls["FrameDurationLimits"]
         requested = math.ceil(1_000_000 / self.settings.frame_rate)
-        duration = max(minimum, requested, self.settings.exposure_us or 0)
+        duration = max(minimum, requested)
+        low, high, _ = self._camera.camera_controls['ExposureTime']
+        self._exposure_bounds[tuple(self.settings.resolution)] = (low, high)
+        high = min(high, duration)
+        exposure = self.settings.exposure_us
+        if exposure == 'min':
+            exposure = low
+        elif exposure == 'max':
+            exposure = high
+        elif exposure is not None:
+            exposure = max(low, min(high, exposure))
         if requested < minimum:
             LOGGER.warning("Requested %.2f fps; configured sensor mode permits %.2f fps",
                            self.settings.frame_rate, 1_000_000 / minimum)
         controls = {"FrameDurationLimits": (duration, duration),
-                    "AeEnable": self.settings.exposure_us is None}
-        if self.settings.exposure_us is not None:
-            controls["ExposureTime"] = self.settings.exposure_us
+                    "AeEnable": exposure is None}
+        if exposure is not None:
+            controls["ExposureTime"] = exposure
         for name, value in (("FrameDurationLimits", duration),
-                            ("ExposureTime", self.settings.exposure_us)):
+                            ("ExposureTime", exposure)):
             if value is not None:
                 low, high, _ = self._camera.camera_controls[name]
                 if not low <= value <= high:
@@ -253,6 +265,7 @@ class CameraStream:
         self._raw_config = dict(raw)
         self._camera.set_controls(controls)
         self._frame_duration_us = duration
+        self._exposure_us = exposure
         self._camera.post_callback = self._on_frame
         self._camera.start(show_preview=False)
         with self._lock:
@@ -363,6 +376,11 @@ class CameraStream:
             with self._lock:
                 self._api_capture = None
                 self._capture_busy = False
+
+    def exposure_limits(self, frame_rate, resolution):
+        """Use sensor limits from the configured mode without probing other modes."""
+        low, high = self._exposure_bounds.get(tuple(resolution), (1, 1000000000))
+        return low, min(high, int(1_000_000 / frame_rate))
 
     def settings_snapshot(self):
         with self._lock:

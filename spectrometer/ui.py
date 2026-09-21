@@ -8,6 +8,7 @@ import numpy as np
 import pygame
 
 from .performance import PerformanceMetrics
+from .settings import exposure_label, frame_rate_label, frame_rate_position, slider_frame_rate
 
 
 LOGGER = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ TEXT = "#edf3f8"
 MUTED = "#a9bacb"
 BUTTON = "#28465d"
 PRESSED = "#3c718f"
+SPF_TEXT = "#ffd166"
 
 
 class SpectrometerUI:
@@ -320,10 +322,17 @@ class SpectrometerUI:
     def _settings_row_rect(index):
         return pygame.Rect(8, 32 + index * 37, 464, 35)
 
+    def _exposure_limits(self, settings):
+        if self.camera is not None:
+            limits = self.camera.exposure_limits(settings['frame_rate'], settings['resolution'])
+            if isinstance(limits, tuple) and len(limits) == 2:
+                return limits
+        return 1, int(1_000_000 / settings['frame_rate'])
+
     def _edit_setting(self, index):
         if index not in range(4):
             return
-        from .config import CAMERA_MODES, maximum_frame_rate
+        from .config import CAMERA_MODES
         keys = ('frame_rate', 'resolution', 'exposure_us', 'frame_averaging')
         self._settings_dialog = keys[index]
         self._settings_message = ''
@@ -340,14 +349,21 @@ class SpectrometerUI:
                  if size == current), 0)
         else:
             if self._settings_dialog == 'frame_rate':
-                self._settings_min = 1
-                self._settings_max = maximum_frame_rate(self._camera_settings['resolution'])
-                self._settings_value = round(self._camera_settings['frame_rate'])
+                self._settings_min = -3
+                self._settings_max = 5
+                self._settings_value = frame_rate_position(self._camera_settings['frame_rate'])
             elif self._settings_dialog == 'exposure_us':
-                self._settings_min = 0
-                self._settings_max = max(1, int(1000 / self._camera_settings['frame_rate']))
+                low, high = self._exposure_limits(self._camera_settings)
                 exposure = self._camera_settings['exposure_us']
-                self._settings_value = 0 if exposure is None else round(exposure / 1000)
+                values = set(range(((low + 999) // 1000) * 1000, high + 1, 1000))
+                if type(exposure) is int:
+                    values.add(max(low, min(high, exposure)))
+                self._exposure_options = ['min', *sorted(values), 'max']
+                self._settings_min, self._settings_max = 0, len(self._exposure_options) - 1
+                selected = 'min' if exposure is None else exposure
+                if type(selected) is int:
+                    selected = max(low, min(high, selected))
+                self._settings_value = self._exposure_options.index(selected)
             else:
                 self._settings_min, self._settings_max = 1, 10
                 self._settings_value = self._camera_settings['frame_averaging']
@@ -388,16 +404,16 @@ class SpectrometerUI:
                                    sensor_area=(0, 0, resolution[0], resolution[1]))
                 calibration_changed = calibration != self.calibration_settings
         elif key == 'frame_rate':
-            updated[key] = self._settings_value
+            updated[key] = slider_frame_rate(self._settings_value)
         elif key == 'exposure_us':
-            updated[key] = None if self._settings_value == 0 else self._settings_value * 1000
+            updated[key] = self._exposure_options[self._settings_value]
         elif key == 'frame_averaging':
             updated[key] = self._settings_value
         else:
             return
-        maximum_exposure = int(1_000_000 / updated['frame_rate'])
-        if updated['exposure_us'] is not None:
-            updated['exposure_us'] = min(updated['exposure_us'], maximum_exposure)
+        minimum_exposure, maximum_exposure = self._exposure_limits(updated)
+        if type(updated['exposure_us']) is int:
+            updated['exposure_us'] = max(minimum_exposure, min(updated['exposure_us'], maximum_exposure))
         try:
             validate({'camera': updated, 'calibration': calibration})
             if self._on_camera_settings_changed is not None:
@@ -1533,7 +1549,8 @@ class SpectrometerUI:
             # Fit long SSIDs without allowing values to overlap option names.
             while small.size(value)[0] > 245 and len(value) > 1:
                 value = value[:-4] + "..." if len(value) > 4 else value[:-1]
-            text = small.render(value, True, TEXT)
+            color = SPF_TEXT if name == 'Frame rate' and value.endswith(' spf') else TEXT
+            text = small.render(value, True, color)
             surface.blit(text, text.get_rect(midright=(464, rect.centery)))
 
     def _draw_setting_dialog(self, surface, font):
@@ -1557,12 +1574,13 @@ class SpectrometerUI:
                 surface.blit(text, text.get_rect(center=rect.center))
             return
         if self._settings_dialog == 'exposure_us':
-            value = 'Auto' if self._settings_value == 0 else f'{self._settings_value} ms'
+            value = exposure_label(self._exposure_options[self._settings_value])
         elif self._settings_dialog == 'frame_rate':
-            value = f'{self._settings_value} fps'
+            value = frame_rate_label(slider_frame_rate(self._settings_value))
         else:
             value = str(self._settings_value)
-        value_text = font.render(value, True, TEXT)
+        color = SPF_TEXT if value.endswith(' spf') else TEXT
+        value_text = font.render(value, True, color)
         surface.blit(value_text, value_text.get_rect(center=(240, 100)))
         track = self._setting_slider_rect()
         pygame.draw.rect(surface, BORDER, track, border_radius=4)
@@ -1570,9 +1588,19 @@ class SpectrometerUI:
         fraction = 0 if span == 0 else (self._settings_value - self._settings_min) / span
         x = round(track.left + fraction * track.width)
         pygame.draw.circle(surface, PRESSED, (x, track.centery), 13)
-        low = small.render('Auto' if self._settings_dialog == 'exposure_us' else str(self._settings_min),
+        if self._settings_dialog == 'frame_rate':
+            for position in range(self._settings_min, self._settings_max + 1):
+                tick_x = round(track.left + (position - self._settings_min) / span * track.width)
+                pygame.draw.line(surface, SPF_TEXT if position < 1 else MUTED,
+                                 (tick_x, track.bottom + 4), (tick_x, track.bottom + 9))
+            low = small.render('5 spf', True, SPF_TEXT)
+            high = small.render(f'{self._settings_max} fps', True, MUTED)
+            surface.blit(low, low.get_rect(midtop=(track.left, 166)))
+            surface.blit(high, high.get_rect(midtop=(track.right, 166)))
+            return
+        low = small.render('Min' if self._settings_dialog == 'exposure_us' else str(self._settings_min),
                            True, MUTED)
-        high = small.render(str(self._settings_max), True, MUTED)
+        high = small.render('Max' if self._settings_dialog == 'exposure_us' else str(self._settings_max), True, MUTED)
         surface.blit(low, low.get_rect(midtop=(track.left, 158)))
         surface.blit(high, high.get_rect(midtop=(track.right, 158)))
 

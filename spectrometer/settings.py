@@ -4,6 +4,25 @@ from concurrent.futures import ThreadPoolExecutor
 import subprocess
 
 
+def frame_rate_label(fps):
+    return f'{1 / fps:g} spf' if fps < 1 else f'{fps:g} fps'
+
+
+def exposure_label(exposure):
+    if exposure in ('min', 'max'):
+        return exposure.title()
+    return 'Auto' if exposure is None else f'{exposure / 1000:g} ms'
+
+
+def slider_frame_rate(value):
+    """Slider positions -3..0 are 5..2 seconds per frame; 1+ are fps."""
+    return 1 / (2 - value) if value < 1 else value
+
+
+def frame_rate_position(fps):
+    return round(2 - 1 / fps) if fps < 1 else round(fps)
+
+
 def _output(command):
     try:
         return subprocess.run(command, capture_output=True, text=True,
@@ -48,10 +67,9 @@ class SettingsView:
         fps, size, exposure, averaging = (snapshot[key] for key in
                                           ('frame_rate', 'resolution', 'exposure_us', 'frame_averaging'))
         return [
-            ('Frame rate', f'{fps:g} fps'),
+            ('Frame rate', frame_rate_label(fps)),
             ('Camera resolution', f'{size[0]} x {size[1]}'),
-            ('Exposure time', f'{exposure / 1000:g} ms' if exposure is not None
-             else 'Auto'),
+            ('Exposure time', exposure_label(exposure)),
             ('Frame averaging', str(averaging)),
         ]
 

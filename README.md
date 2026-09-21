@@ -63,7 +63,7 @@ calibration labels, and the sensor bounding box persist between runs. `--fps` an
 
 Full-resolution IMX477 capture is
 limited to about 10 fps; the requested rate is capped to the sensor mode's limit.
-Longer exposures can reduce it further. Startup logs report the configured frame
+Fixed exposures are clamped to the sensor limits and frame period. Startup logs report the configured frame
 period and first-frame exposure. Use `--no-camera` for touch-only diagnostics or
 `--windowed --no-camera` for a desktop preview without Pi hardware.
 
@@ -124,7 +124,7 @@ or 503 if another spectrum operation is in progress.
 
 Returns the current saved configuration and network status as a JSON object:
 
-- `camera`: `frame_rate`, `frame_averaging`, `resolution`, and `exposure_us` (`null` means automatic).
+- `camera`: `frame_rate`, `frame_averaging`, `resolution`, and `exposure_us` (`"min"`/`"max"` follow the exposure limits; `null` means automatic).
 - `calibration`: `scale` pixel/value pairs, `sensor_area`, and `channel_ranges`.
 - `network`: `ip_address` and `wifi_ssid` (refreshed in the background).
 

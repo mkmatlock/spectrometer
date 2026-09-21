@@ -5,3 +5,5 @@ dialog.settings{width:850px;max-height:calc(100dvh - 2rem);padding:0 0 1.25rem;o
 @media(min-width:1300px){#plot{height:420px}.record-name{font-size:1rem}.viewer{min-height:590px}}
 @media(max-width:850px){.workspace{grid-template-columns:1fr}.spectrum-list{max-height:300px;min-height:100px}.header{flex-wrap:wrap}.header nav{margin-left:auto}.viewer{min-height:350px}.empty{min-height:330px}.record{display:flex;align-items:center;justify-content:space-between;gap:1rem}.record-date{white-space:nowrap;margin:0}.record-name{min-width:0}#plot{height:300px}main{padding-top:.5rem}.library{order:1}.viewer{order:2}}
 @media(max-width:420px){.header{justify-content:center;padding:.8rem}.header nav{margin:0;width:100%;justify-content:center}.header nav button{flex:1;padding:.5rem}.section-head{padding:1rem}.record{display:block}.record-date{margin-top:.2rem}.plot-meta{margin-left:1rem;margin-right:1rem}.badge{font-size:.75rem}.settings-group{padding:0 1rem}}
+
+.spf{color:#ffd166}

@@ -22,6 +22,15 @@ class CameraTests(unittest.TestCase):
                                   "FrameDurationLimits": (100000, 1000000, None)}
         return camera
 
+    def test_slow_frame_durations(self):
+        for seconds in (2, 3, 4, 5):
+            camera = self.fake_camera()
+            camera.camera_controls['FrameDurationLimits'] = (100000, 10000000, None)
+            with patch.dict(sys.modules, {'picamera2': SimpleNamespace(Picamera2=lambda: camera)}):
+                with CameraStream(CameraSettings(frame_rate=1 / seconds)):
+                    self.assertEqual(camera.set_controls.call_args.args[0]['FrameDurationLimits'],
+                                     (seconds * 1000000, seconds * 1000000))
+
     def test_full_resolution_mode_and_fps_limit(self):
         camera = self.fake_camera()
         with patch.dict(sys.modules, {"picamera2": SimpleNamespace(Picamera2=lambda: camera)}):
@@ -37,13 +46,29 @@ class CameraTests(unittest.TestCase):
             camera.stop.assert_called_once_with()
             camera.close.assert_called_once_with()
 
-    def test_manual_exposure_extends_frame_period(self):
+    def test_manual_exposure_at_frame_period(self):
         camera = self.fake_camera()
         with patch.dict(sys.modules, {"picamera2": SimpleNamespace(Picamera2=lambda: camera)}):
             with CameraStream(CameraSettings(exposure_us=200000)):
                 camera.set_controls.assert_called_once_with({
                     "FrameDurationLimits": (200000, 200000),
                     "AeEnable": False, "ExposureTime": 200000})
+
+    def test_exposure_modes_and_clamping_follow_sensor_and_frame_limits(self):
+        camera = self.fake_camera()
+        camera.camera_controls['FrameDurationLimits'] = (100000, 10000000, None)
+        with patch.dict(sys.modules, {'picamera2': SimpleNamespace(Picamera2=lambda: camera)}):
+            for mode, expected in (('min', 114), ('max', 200000), (1, 114),
+                                   (500000, 200000), (25000, 25000)):
+                with CameraStream(CameraSettings(exposure_us=mode)) as stream:
+                    controls = camera.set_controls.call_args.args[0]
+                    self.assertEqual(controls['ExposureTime'], expected)
+                    self.assertFalse(controls['AeEnable'])
+                    self.assertEqual(controls['FrameDurationLimits'], (200000, 200000))
+                    self.assertEqual(stream.exposure_limits(5, (4056, 3040)), (114, 200000))
+                    stream.request_reconfigure(CameraSettings(frame_rate=0.2, exposure_us=mode)).result(timeout=2)
+                    expected_slow = 1000000 if mode == 'max' else (114 if mode == 'min' else max(114, mode))
+                    self.assertEqual(camera.set_controls.call_args.args[0]['ExposureTime'], expected_slow)
 
     def test_runtime_reconfigure_restarts_with_new_settings(self):
         camera = self.fake_camera()

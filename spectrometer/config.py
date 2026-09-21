@@ -33,8 +33,8 @@ def validate(data):
     fps, exposure = camera['frame_rate'], camera['exposure_us']
     if not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0:
         raise ValueError('Frame rate must be positive and finite')
-    if exposure is not None and (type(exposure) is not int or exposure <= 0):
-        raise ValueError('Exposure must be positive integer microseconds or None')
+    if exposure not in (None, 'min', 'max') and (type(exposure) is not int or exposure <= 0):
+        raise ValueError('Exposure must be positive integer microseconds, min, max, or None')
     averaging = camera['frame_averaging']
     if type(averaging) is not int or not 1 <= averaging <= 10:
         raise ValueError('Frame averaging must be an integer from 1 to 10')

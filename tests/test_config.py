@@ -31,6 +31,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(store.data['calibration']['channel_ranges']['Red'], (100, 1900))
         self.assertEqual(DEFAULTS['calibration']['scale'], {})
 
+    def test_exposure_modes_persist_when_frame_rate_changes(self):
+        store = SettingsStore(self.path)
+        for mode in ('min', 'max'):
+            store.update(camera={'exposure_us': mode})
+            store.update(camera={'frame_rate': 0.2})
+            self.assertEqual(SettingsStore(self.path).data['camera']['exposure_us'], mode)
+
     def test_failed_write_preserves_previous_file_and_memory(self):
         store = SettingsStore(self.path)
         original = self.path.read_bytes()

@@ -65,12 +65,12 @@ class SettingsTests(unittest.TestCase):
                 ui._open_settings()
 
             ui._edit_setting(0)
-            self.assertEqual((ui._settings_min, ui._settings_max), (1, 10))
-            ui._settings_value = 10
+            self.assertEqual((ui._settings_min, ui._settings_max), (-3, 5))
+            ui._settings_value = 5
             ui._accept_setting()
 
             ui._edit_setting(2)
-            self.assertEqual((ui._settings_min, ui._settings_max), (0, 100))
+            self.assertEqual((ui._settings_min, ui._settings_max), (0, 201))
             ui._settings_value = 25
             ui._accept_setting()
 
@@ -87,7 +87,7 @@ class SettingsTests(unittest.TestCase):
                              {'scale': {}, 'sensor_area': (0, 0, 2028, 1520),
                               'channel_ranges': {}})
             self.assertEqual(ui.settings_view.rows[0:4],
-                             [('Frame rate', '10 fps'),
+                             [('Frame rate', '5 fps'),
                               ('Camera resolution', '2028 x 1520'),
                               ('Exposure time', '25 ms'), ('Frame averaging', '10')])
 
@@ -98,6 +98,65 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(configured.frame_averaging, 10)
             self.assertEqual(len(changes), 4)
             camera.request_resume.assert_not_called()
+        finally:
+            ui.review.close()
+            ui.settings_view.close()
+
+    def test_slow_frame_rates_round_trip_and_exposure_limit(self):
+        ui = SpectrometerUI()
+        try:
+            for seconds in (2, 3, 4, 5):
+                ui._edit_setting(0)
+                track = ui._setting_slider_rect()
+                position = 2 - seconds
+                x = track.left + (position - ui._settings_min) / (ui._settings_max - ui._settings_min) * track.width
+                ui._set_slider_position((x, track.centery))
+                ui._accept_setting()
+                self.assertAlmostEqual(ui._camera_settings['frame_rate'], 1 / seconds)
+                self.assertEqual(ui.settings_view.rows[0], ('Frame rate', f'{seconds} spf'))
+                ui._edit_setting(0)
+                self.assertEqual(ui._settings_value, position)
+                ui._cancel_setting()
+                ui._edit_setting(2)
+                self.assertEqual(ui._settings_max, seconds * 1000 + 1)
+                ui._cancel_setting()
+        finally:
+            ui.review.close()
+            ui.settings_view.close()
+
+    def test_exposure_modes_and_fixed_values_across_frame_rates(self):
+        camera = Mock()
+        camera.exposure_limits.side_effect = lambda fps, resolution: (114, min(900000, int(1000000 / fps)))
+        from spectrometer.config import DEFAULTS
+        ui = SpectrometerUI(camera=camera, camera_settings=DEFAULTS['camera'])
+        try:
+            def change_rate(position):
+                ui._edit_setting(0)
+                ui._settings_value = position
+                ui._accept_setting()
+
+            for mode in ('min', 'max'):
+                ui._edit_setting(2)
+                ui._settings_value = ui._exposure_options.index(mode)
+                ui._accept_setting()
+                for position in (1, 5, -3):
+                    change_rate(position)
+                    self.assertEqual(ui._camera_settings['exposure_us'], mode)
+                    self.assertEqual(ui.settings_view.rows[2], ('Exposure time', mode.title()))
+                    ui._edit_setting(2)
+                    self.assertEqual(ui._exposure_options[ui._settings_value], mode)
+                    ui._cancel_setting()
+
+            for previous, expected in ((25000, 25000), (500000, 200000), (10, 114)):
+                ui._camera_settings['exposure_us'] = previous
+                change_rate(5)
+                self.assertEqual(ui._camera_settings['exposure_us'], expected)
+                change_rate(1)
+                self.assertEqual(ui._camera_settings['exposure_us'], expected)
+                # Opening and accepting must preserve exact microseconds.
+                ui._edit_setting(2)
+                ui._accept_setting()
+                self.assertEqual(ui._camera_settings['exposure_us'], expected)
         finally:
             ui.review.close()
             ui.settings_view.close()
